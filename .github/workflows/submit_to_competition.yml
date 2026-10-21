@@ -4,9 +4,9 @@ on:
   workflow_dispatch:
     inputs:
       kernel_version:
-        description: "Kaggle kernel version number to submit (e.g. 13)"
+        description: "Kaggle kernel version number to submit (e.g. 14)"
         required: true
-        default: "13"
+        default: "14"
       message:
         description: "Submission description"
         required: false
@@ -25,18 +25,26 @@ jobs:
       - name: Install Kaggle CLI
         run: pip install kaggle --upgrade -q
 
-      - name: Submit notebook to competition leaderboard
+      - name: Submit notebook to competition leaderboard (code competition)
         run: |
           VERSION="${{ github.event.inputs.kernel_version }}"
           MSG="${{ github.event.inputs.message }}"
           echo "Submitting kernel version $VERSION as code competition entry..."
-          kaggle competitions submit \
-            -c arc-prize-2026-arc-agi-2 \
-            --kernel joyjeni/arc-agi-2-solver-three-stage-pipeline \
-            --kernel-version "$VERSION" \
-            -m "$MSG"
+          # Code competition: must use --kernel + --kernel-version, NOT -f (file)
+          python3 -c "
+          from kaggle import api
+          api.authenticate()
+          result = api.competition_submit_code(
+              file_name='submission.json',
+              message='$MSG',
+              competition='arc-prize-2026-arc-agi-2',
+              kernel='joyjeni/arc-agi-2-solver-three-stage-pipeline',
+              kernel_version='$VERSION',
+          )
+          print('Submit result:', result)
+          "
 
-      - name: Confirm submission
+      - name: Confirm submission status
         run: |
-          echo "Checking submission status..."
+          echo "Recent submissions:"
           kaggle competitions submissions -c arc-prize-2026-arc-agi-2 | head -5
