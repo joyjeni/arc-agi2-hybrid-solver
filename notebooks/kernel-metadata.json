@@ -13,7 +13,5 @@
     "arc-prize-2026-arc-agi-2"
   ],
   "kernel_sources": [],
-  "model_sources": [
-    "joyjeni/qwen3-4b-grids15-sft139/transformers/sft139/1"
-  ]
+  "model_sources": []
 }
