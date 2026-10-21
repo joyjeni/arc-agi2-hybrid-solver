@@ -40,7 +40,8 @@ jobs:
           pip install kaggle
           mkdir -p /tmp/arcdata
           kaggle competitions download -c arc-prize-2026-arc-agi-2 -p /tmp/arcdata
-          cd /tmp/arcdata && unzip -o "*.zip" -d . || true
+          cd /tmp/arcdata && unzip -o *.zip -d . || true
+          echo "=== Extracted files ===" && find /tmp/arcdata -type f | sort
 
       - name: Run Tier-1 benchmark (DSA only)
         run: |
@@ -48,11 +49,22 @@ jobs:
           if [ -n "${{ github.event.inputs.limit }}" ]; then
             LIMIT_ARG="--limit ${{ github.event.inputs.limit }}"
           fi
+          # Locate challenge/solution files dynamically (handles hyphen vs underscore naming)
+          SPLIT="${{ github.event.inputs.split || 'eval' }}"
+          if [ "$SPLIT" = "eval" ]; then
+            CHALLENGES=$(find /tmp/arcdata -name "*evaluation*challenges*" | head -1)
+            SOLUTIONS=$(find /tmp/arcdata -name "*evaluation*solutions*" | head -1)
+          else
+            CHALLENGES=$(find /tmp/arcdata -name "*training*challenges*" | head -1)
+            SOLUTIONS=$(find /tmp/arcdata -name "*training*solutions*" | head -1)
+          fi
+          echo "Challenges: $CHALLENGES"
+          echo "Solutions:  $SOLUTIONS"
           python scripts/benchmark.py \
-            --split ${{ github.event.inputs.split || 'eval' }} \
+            --split "$SPLIT" \
             --tier 1 \
-            --challenges /tmp/arcdata/arc-agi_evaluation-challenges.json \
-            --solutions  /tmp/arcdata/arc-agi_evaluation-solutions.json \
+            --challenges "$CHALLENGES" \
+            --solutions  "$SOLUTIONS" \
             --output     /tmp/submission.json \
             $LIMIT_ARG
 
