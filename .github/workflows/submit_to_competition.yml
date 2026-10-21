@@ -1,0 +1,68 @@
+name: Submit to ARC-AGI-2 Leaderboard
+
+on:
+  # Trigger manually from GitHub Actions UI
+  workflow_dispatch:
+    inputs:
+      message:
+        description: 'Submission message for the leaderboard'
+        required: false
+        default: 'arc-jeni hybrid DSA+LLM auto-submit'
+  # OR trigger automatically after benchmark succeeds
+  workflow_run:
+    workflows: ["Benchmark"]
+    types: [completed]
+
+jobs:
+  submit:
+    runs-on: ubuntu-latest
+    if: >
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+
+    steps:
+      - name: Set up Kaggle CLI
+        run: pip install --upgrade kaggle
+
+      - name: Configure Kaggle credentials
+        run: |
+          mkdir -p ~/.kaggle
+          echo '{"username":"${{ secrets.KAGGLE_USERNAME }}","key":"${{ secrets.KAGGLE_KEY }}"}' > ~/.kaggle/kaggle.json
+          chmod 600 ~/.kaggle/kaggle.json
+
+      - name: Wait for latest kernel to complete
+        run: |
+          for i in $(seq 1 60); do
+            STATUS=$(kaggle kernels status joyjeni/arc-agi-2-solver-three-stage-pipeline 2>&1)
+            echo "[$i] $STATUS"
+            if echo "$STATUS" | grep -q "COMPLETE"; then
+              echo "Kernel complete."; break
+            fi
+            if echo "$STATUS" | grep -q "ERROR"; then
+              echo "Kernel errored — aborting submit."; exit 1
+            fi
+            sleep 30
+          done
+
+      - name: Download submission.json from kernel output
+        run: |
+          mkdir -p /tmp/kaggle_out
+          kaggle kernels output joyjeni/arc-agi-2-solver-three-stage-pipeline -p /tmp/kaggle_out
+          ls -lh /tmp/kaggle_out/submission.json
+          python3 -c "
+          import json
+          sub = json.load(open('/tmp/kaggle_out/submission.json'))
+          print(f'Tasks in submission: {len(sub)}')
+          t = list(sub.values())[0][0]
+          assert 'attempt_1' in t and 'attempt_2' in t, 'Bad format'
+          print('Format OK: attempt_1 + attempt_2 present')
+          "
+
+      - name: Submit to competition leaderboard
+        run: |
+          MSG="${{ github.event.inputs.message || 'arc-jeni hybrid DSA+LLM auto-submit' }}"
+          kaggle competitions submit \
+            -c arc-prize-2026-arc-agi-2 \
+            -f /tmp/kaggle_out/submission.json \
+            -m "$MSG"
+          echo "Leaderboard submission complete."
