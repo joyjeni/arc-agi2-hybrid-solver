@@ -48,3 +48,4 @@ data/
 datasets/
 *.json
 !configs/*.json
+!notebooks/*.json
