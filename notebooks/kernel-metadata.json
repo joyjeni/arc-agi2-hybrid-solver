@@ -1,6 +1,6 @@
 {
   "id": "joyjeni/arc-agi-2-solver-three-stage-pipeline",
-  "title": "ARC-AGI-2 Three-Stage Pipeline: DSA + ProgSynth + Chakra LLM",
+  "title": "ARC-AGI-2-Solver-Three-Stage-Pipeline",
   "code_file": "arc_jeni_submission.ipynb",
   "language": "python",
   "kernel_type": "notebook",
@@ -8,9 +8,7 @@
   "enable_gpu": true,
   "enable_tpu": false,
   "enable_internet": true,
-  "dataset_sources": [
-    "arc-prize-2026-arc-agi-2"
-  ],
+  "dataset_sources": [],
   "competition_sources": [
     "arc-prize-2026-arc-agi-2"
   ],
