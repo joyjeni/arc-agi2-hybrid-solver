@@ -38,7 +38,9 @@ jobs:
           KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
         run: |
           pip install kaggle
-          kaggle competitions download -c arc-prize-2026-arc-agi-2 -p /tmp/arcdata --unzip
+          mkdir -p /tmp/arcdata
+          kaggle competitions download -c arc-prize-2026-arc-agi-2 -p /tmp/arcdata
+          cd /tmp/arcdata && unzip -o "*.zip" -d . || true
 
       - name: Run Tier-1 benchmark (DSA only)
         run: |
