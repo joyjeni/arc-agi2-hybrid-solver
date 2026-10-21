@@ -7,7 +7,7 @@ Each yields a different inductive bias, improving coverage when ensembled.
 
 from __future__ import annotations
 
-from ..core.grid_codec import Grid, grid_to_text, grid_dims
+from ..core.grid_codec import Grid, grid_dims, grid_to_text
 
 
 def _fmt_pair(inp: Grid, out: Grid, idx: int, mode: str = "numeric") -> str:

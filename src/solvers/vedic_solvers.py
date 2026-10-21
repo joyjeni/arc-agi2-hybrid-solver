@@ -7,13 +7,14 @@ concrete DSA algorithms underneath, keeping primary logic obfuscated.
 
 from __future__ import annotations
 
-from typing import Optional
-
-from ..core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
 from ..core.grid_codec import (
-    Grid, copy_grid, background_color, color_histogram,
-    rotate90, flip_h, transpose,
+    Grid,
+    background_color,
+    copy_grid,
+    flip_h,
+    rotate90,
 )
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
 
@@ -47,16 +48,18 @@ class AnurupyaScaleSolver(BaseSolver):
         return [[grid[r][c] for c in range(len(grid[0])) for _ in range(k)]
                 for r in range(len(grid)) for _ in range(k)]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for k in range(2, 8):
             ok = True
             for pair in ctx.train_pairs:
                 ih, iw = len(pair["input"]), len(pair["input"][0])
                 oh, ow = len(pair["output"]), len(pair["output"][0])
                 if oh != ih * k or ow != iw * k:
-                    ok = False; break
+                    ok = False
+                    break
                 if self._scale(pair["input"], k) != pair["output"]:
-                    ok = False; break
+                    ok = False
+                    break
             if ok:
                 preds = [_mk(self._scale(inp, k), self.name) for inp in ctx.test_inputs]
                 return _res(ctx.task_id, preds)
@@ -102,7 +105,7 @@ class ParavartyaSymmetrySolver(BaseSolver):
                     result[r][c] = mirror
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for fn in [self._h_sym, self._v_sym]:
             if all(fn(p["input"]) == p["output"] for p in ctx.train_pairs):
                 preds = [_mk(fn(inp), self.name) for inp in ctx.test_inputs]
@@ -135,14 +138,15 @@ class VyashtiTileSolver(BaseSolver):
             for r in range(len(grid) * rows)
         ]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for tr in [2, 3]:
             for tc in [2, 3]:
                 ok = True
                 for pair in ctx.train_pairs:
                     expected = self._tile(pair["input"], tr, tc)
                     if expected != pair["output"]:
-                        ok = False; break
+                        ok = False
+                        break
                 if ok:
                     preds = [_mk(self._tile(inp, tr, tc), self.name) for inp in ctx.test_inputs]
                     return _res(ctx.task_id, preds)
@@ -174,7 +178,7 @@ class LopanaBBoxSolver(BaseSolver):
             return grid
         return [grid[r][cols[0]:cols[-1]+1] for r in rows]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if all(self._crop(p["input"]) == p["output"] for p in ctx.train_pairs):
             preds = [_mk(self._crop(inp), self.name) for inp in ctx.test_inputs]
             return _res(ctx.task_id, preds)
@@ -211,7 +215,7 @@ class BaGuaTransformSolver(BaseSolver):
             ("flipH_rot270", lambda g: flip_h(rotate90(rotate90(rotate90(g))))),
         ]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for tname, fn in self._transforms():
             if tname == "rot0":
                 continue  # identity handled by IdentitySolver
@@ -265,7 +269,7 @@ class ZhongLiDirectedGravitySolver(BaseSolver):
                     result[r][i] = v
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for d in ("down", "up", "left", "right"):
             if all(self._gravity(p["input"], d) == p["output"] for p in ctx.train_pairs):
                 preds = [_mk(self._gravity(inp, d), self.name) for inp in ctx.test_inputs]
@@ -304,14 +308,15 @@ class LoShuPeriodicFillSolver(BaseSolver):
                 for r in range(h):
                     for c in range(w):
                         if grid[r][c] != bg and grid[r][c] != tile[r % th][c % tw]:
-                            ok = False; break
+                            ok = False
+                            break
                     if not ok:
                         break
                 if ok:
                     return [[tile[r % th][c % tw] for c in range(w)] for r in range(h)]
         return copy_grid(grid)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if self._fill(pair["input"]) != pair["output"]:
                 return None

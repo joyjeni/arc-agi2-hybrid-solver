@@ -8,13 +8,12 @@ collects grids, votes by exact-grid majority, returns top-2 as attempt_1/attempt
 from __future__ import annotations
 
 import logging
-from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError
-from typing import Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-from ..core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
 from ..core.grid_codec import Grid
-from .prompts import ALL_CHAKRA_TEMPLATES, chakra_4_prog_synth
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .engine import QwenEngine, _parse_grid_from_response
+from .prompts import ALL_CHAKRA_TEMPLATES
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +46,7 @@ class ChakraEnsembleSolver(BaseSolver):
     def priority(self) -> int:
         return 90
 
-    def _predict_single(self, train_pairs: list[dict], test_input: Grid) -> Optional[Grid]:
+    def _predict_single(self, train_pairs: list[dict], test_input: Grid) -> Grid | None:
         """Run n_templates prompts concurrently and vote."""
         templates = ALL_CHAKRA_TEMPLATES[:self._n_templates]
         # Skip program-synthesis template (handled by ProgramSynthesisSolver)
@@ -82,7 +81,7 @@ class ChakraEnsembleSolver(BaseSolver):
         best = sorted(votes, key=votes.__getitem__, reverse=True)
         return grids[best[0]]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         preds: list[Prediction] = []
         for test_inp in ctx.test_inputs:
             g1 = self._predict_single(ctx.train_pairs, test_inp)

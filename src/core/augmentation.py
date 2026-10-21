@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-from itertools import permutations
-from typing import Iterator
+from collections.abc import Iterator
 
-from .grid_codec import Grid, rotate90, flip_h, flip_v, transpose, copy_grid
+from .grid_codec import Grid, copy_grid, flip_h, rotate90
 
 
 def eight_views(grid: Grid) -> list[Grid]:

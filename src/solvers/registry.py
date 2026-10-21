@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import logging
-from typing import Type
 
 from ..core.interfaces import BaseSolver
 
@@ -21,15 +20,15 @@ logger = logging.getLogger(__name__)
 class SolverRegistry:
     """Central registry; follows Factory + Singleton patterns."""
 
-    _instance: "SolverRegistry | None" = None
+    _instance: SolverRegistry | None = None
 
-    def __new__(cls) -> "SolverRegistry":
+    def __new__(cls) -> SolverRegistry:
         if cls._instance is None:
             cls._instance = super().__new__(cls)
-            cls._instance._solvers: dict[str, Type[BaseSolver]] = {}
+            cls._instance._solvers: dict[str, type[BaseSolver]] = {}
         return cls._instance
 
-    def register(self, solver_cls: Type[BaseSolver]) -> None:
+    def register(self, solver_cls: type[BaseSolver]) -> None:
         self._solvers[solver_cls.__name__] = solver_cls
         logger.debug("Registered solver: %s", solver_cls.__name__)
 
@@ -49,7 +48,7 @@ class SolverRegistry:
 REGISTRY = SolverRegistry()
 
 
-def register_solver(cls: Type[BaseSolver]) -> Type[BaseSolver]:
+def register_solver(cls: type[BaseSolver]) -> type[BaseSolver]:
     """Class decorator: auto-registers solver on import."""
     REGISTRY.register(cls)
     return cls

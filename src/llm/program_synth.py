@@ -8,7 +8,6 @@ to test inputs.
 
 from __future__ import annotations
 
-import ast
 import json
 import logging
 import re
@@ -16,11 +15,9 @@ import subprocess
 import sys
 import tempfile
 import textwrap
-import time
-from typing import Optional
 
-from ..core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
 from ..core.grid_codec import Grid
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -29,7 +26,7 @@ EXEC_TIMEOUT = 5
 MAX_CODE_RETRIES = 3
 
 
-def _extract_code(text: str) -> Optional[str]:
+def _extract_code(text: str) -> str | None:
     """Extract Python code from LLM output (markdown fenced or raw)."""
     # Try ```python ... ```
     m = re.search(r"```(?:python)?\s*\n(.*?)```", text, re.DOTALL)
@@ -42,7 +39,7 @@ def _extract_code(text: str) -> Optional[str]:
     return None
 
 
-def _extract_result_json(text: str) -> Optional[Grid]:
+def _extract_result_json(text: str) -> Grid | None:
     """Extract the RESULT: [...] line from LLM output."""
     m = re.search(r"RESULT:\s*(\[.*?\])\s*$", text, re.DOTALL | re.MULTILINE)
     if m:
@@ -53,7 +50,7 @@ def _extract_result_json(text: str) -> Optional[Grid]:
     return None
 
 
-def _run_code_sandboxed(code: str, test_grid: Grid, timeout: int = EXEC_TIMEOUT) -> Optional[Grid]:
+def _run_code_sandboxed(code: str, test_grid: Grid, timeout: int = EXEC_TIMEOUT) -> Grid | None:
     """Run synthesized `solve(grid)` in a subprocess and return the result."""
     script = textwrap.dedent(f"""
 import json, sys
@@ -117,7 +114,7 @@ class ProgramSynthesisSolver(BaseSolver):
     def priority(self) -> int:
         return 50  # runs after Tier-1 DSA solvers
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         from .prompts import chakra_4_prog_synth
 
         for attempt in range(self._max_retries):
@@ -140,7 +137,8 @@ class ProgramSynthesisSolver(BaseSolver):
             for test_inp in ctx.test_inputs:
                 result = _run_code_sandboxed(code, test_inp)
                 if result is None:
-                    all_ok = False; break
+                    all_ok = False
+                    break
                 preds.append(Prediction(
                     attempt_1=result,
                     attempt_2=result,

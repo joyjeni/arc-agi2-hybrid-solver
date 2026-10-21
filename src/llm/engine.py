@@ -13,12 +13,10 @@ import json
 import logging
 import os
 import re
-import time
 from abc import ABC, abstractmethod
-from typing import Optional
 
-from ..core.grid_codec import Grid, text_to_grid
 from ..core.augmentation import eight_views, inverse_view
+from ..core.grid_codec import Grid, text_to_grid
 
 logger = logging.getLogger(__name__)
 
@@ -35,8 +33,8 @@ class HuggingFaceLLMBackend(LLMBackend):
     """Loads Qwen3-4B (or any HF model) for local inference."""
 
     def __init__(self, model_path: str, device: str = "auto"):
-        from transformers import AutoTokenizer, AutoModelForCausalLM
         import torch
+        from transformers import AutoModelForCausalLM, AutoTokenizer
         logger.info("Loading model from %s ...", model_path)
         self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         self.model = AutoModelForCausalLM.from_pretrained(
@@ -121,7 +119,7 @@ class QwenEngine:
         prompt_fn,
         n_views: int = 4,
         max_tokens: int = 256,
-    ) -> Optional[Grid]:
+    ) -> Grid | None:
         """
         Generate predictions across `n_views` augmented views and vote.
         Returns the most-voted grid, or None if no consistent answer.
@@ -159,7 +157,7 @@ class QwenEngine:
         return votes[best_key][0][1]
 
 
-def _parse_grid_from_response(text: str) -> Optional[Grid]:
+def _parse_grid_from_response(text: str) -> Grid | None:
     """Extract grid from LLM output (numeric | separator or JSON array)."""
     # Try JSON first
     m = re.search(r"\[\s*\[[\d,\s\[\]]+\]\s*\]", text)
@@ -188,7 +186,7 @@ def _parse_grid_from_response(text: str) -> Optional[Grid]:
 
 # ── Factory ─────────────────────────────────────────────────────────────────
 
-def build_engine(model_path: Optional[str] = None, server_url: Optional[str] = None) -> QwenEngine:
+def build_engine(model_path: str | None = None, server_url: str | None = None) -> QwenEngine:
     """
     Auto-select backend:
       1. server_url provided → ServerLLMBackend

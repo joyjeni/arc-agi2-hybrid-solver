@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Optional
 
-from .interfaces import Grid, Prediction, SolverResult, TaskContext
+from .interfaces import SolverResult, TaskContext
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +99,7 @@ def write_submission(
     sub: dict,
     path: str | Path = "submission.json",
     validate: bool = True,
-    tasks: Optional[dict] = None,
+    tasks: dict | None = None,
 ) -> None:
     """Write submission.json, optionally validating first."""
     if validate and tasks:

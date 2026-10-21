@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 Grid = list[list[int]]
 
 COLOR_NAMES = {
@@ -37,7 +35,7 @@ def grid_to_text(grid: Grid, mode: str = "numeric") -> str:
     return " | ".join(rows)
 
 
-def text_to_grid(text: str, mode: str = "numeric") -> Optional[Grid]:
+def text_to_grid(text: str, mode: str = "numeric") -> Grid | None:
     """Decode a grid string back to a 2-D int list. Returns None on failure."""
     try:
         rows = [r.strip() for r in text.strip().split("|")]

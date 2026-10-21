@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any
 
 Grid = list[list[int]]
 Pair = dict[str, Grid]
@@ -52,14 +52,14 @@ class BaseSolver(ABC):
         return 100
 
     @abstractmethod
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         """
         Attempt to solve the task.
         Returns SolverResult if confident, else None.
         """
         ...
 
-    def _timed_solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def _timed_solve(self, ctx: TaskContext) -> SolverResult | None:
         t0 = time.perf_counter()
         result = self.solve(ctx)
         elapsed = (time.perf_counter() - t0) * 1000
@@ -79,7 +79,7 @@ class EnsembleSolver(BaseSolver):
     def name(self) -> str:
         return "EnsembleSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for solver in self._children:
             try:
                 result = solver._timed_solve(ctx)

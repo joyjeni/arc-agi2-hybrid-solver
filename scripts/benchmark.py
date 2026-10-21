@@ -18,14 +18,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
+from src.core.submission import score_submission
 from src.pipeline import (
     load_challenges,
     load_solutions,
-    run_tier1,
     run_pipeline,
+    run_tier1,
 )
-from src.core.submission import score_submission
-
 
 # ---------------------------------------------------------------------------
 # Argument parsing

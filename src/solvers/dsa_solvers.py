@@ -13,16 +13,19 @@ Patterns covered:
 
 from __future__ import annotations
 
-from collections import Counter
-from typing import Optional
-
-from ..core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
 from ..core.grid_codec import (
-    Grid, copy_grid, color_histogram, background_color,
-    rotate90, flip_h, flip_v, transpose, grid_equal, grid_dims,
+    Grid,
+    background_color,
+    color_histogram,
+    copy_grid,
+    flip_h,
+    flip_v,
+    grid_dims,
+    rotate90,
+    transpose,
 )
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
-
 
 # ── Utilities ─────────────────────────────────────────────────────────────────
 
@@ -83,7 +86,7 @@ class IdentitySolver(BaseSolver):
     def priority(self) -> int:
         return 999  # last resort
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         preds = [_make_prediction(inp, self.name, 0.01) for inp in ctx.test_inputs]
         return _result(ctx.task_id, preds)
 
@@ -104,7 +107,7 @@ class ColorFrequencyRuleSolver(BaseSolver):
     def priority(self) -> int:
         return 10
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Learn: does output == [[most_common_color(input)]] for all pairs?
         for rule_fn in [
             lambda g: [[max(color_histogram(g), key=color_histogram(g).get)]],
@@ -142,7 +145,7 @@ class GravityFallSolver(BaseSolver):
                 result[h - 1 - i][c] = v
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if self._apply(pair["input"]) != pair["output"]:
                 return None
@@ -162,7 +165,7 @@ class ReflectHorizontalSolver(BaseSolver):
     def priority(self) -> int:
         return 15
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if all(flip_h(p["input"]) == p["output"] for p in ctx.train_pairs):
             preds = [_make_prediction(flip_h(inp), self.name) for inp in ctx.test_inputs]
             return _result(ctx.task_id, preds)
@@ -181,7 +184,7 @@ class ReflectVerticalSolver(BaseSolver):
     def priority(self) -> int:
         return 15
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if all(flip_v(p["input"]) == p["output"] for p in ctx.train_pairs):
             preds = [_make_prediction(flip_v(inp), self.name) for inp in ctx.test_inputs]
             return _result(ctx.task_id, preds)
@@ -200,7 +203,7 @@ class Rotate90Solver(BaseSolver):
     def priority(self) -> int:
         return 15
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if all(rotate90(p["input"]) == p["output"] for p in ctx.train_pairs):
             preds = [_make_prediction(rotate90(inp), self.name) for inp in ctx.test_inputs]
             return _result(ctx.task_id, preds)
@@ -219,7 +222,7 @@ class TransposeSolver(BaseSolver):
     def priority(self) -> int:
         return 15
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if all(transpose(p["input"]) == p["output"] for p in ctx.train_pairs):
             preds = [_make_prediction(transpose(inp), self.name) for inp in ctx.test_inputs]
             return _result(ctx.task_id, preds)
@@ -243,7 +246,7 @@ class CCRecolorBySizeSolver(BaseSolver):
         return 30
 
     @staticmethod
-    def _rank_color_map(inp: Grid, out: Grid) -> Optional[dict[int, int]]:
+    def _rank_color_map(inp: Grid, out: Grid) -> dict[int, int] | None:
         comps = _connected_components(inp)
         if not comps:
             return None
@@ -260,14 +263,13 @@ class CCRecolorBySizeSolver(BaseSolver):
 
     @staticmethod
     def _apply(inp: Grid, color_map: dict[int, int]) -> Grid:
-        bg = background_color(inp)
         result = copy_grid(inp)
         for r in range(len(inp)):
             for c in range(len(inp[0])):
                 result[r][c] = color_map.get(inp[r][c], inp[r][c])
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         ref_map = self._rank_color_map(
             ctx.train_pairs[0]["input"], ctx.train_pairs[0]["output"]
         )
@@ -313,7 +315,7 @@ class RemoveSmallObjectsSolver(BaseSolver):
             result[r][c] = grid[r][c]
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if self._apply(pair["input"]) != pair["output"]:
                 return None
@@ -334,7 +336,7 @@ class ColorSwapSolver(BaseSolver):
         return 12
 
     @staticmethod
-    def _learn_map(inp: Grid, out: Grid) -> Optional[dict[int, int]]:
+    def _learn_map(inp: Grid, out: Grid) -> dict[int, int] | None:
         if grid_dims(inp) != grid_dims(out):
             return None
         h, w = grid_dims(inp)
@@ -347,7 +349,7 @@ class ColorSwapSolver(BaseSolver):
                 cmap[i] = o
         return cmap
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         ref = self._learn_map(ctx.train_pairs[0]["input"], ctx.train_pairs[0]["output"])
         if ref is None:
             return None
@@ -383,7 +385,7 @@ class RowSortSolver(BaseSolver):
             return -1
         return sorted(grid, key=key)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if self._sorted_rows(pair["input"]) != pair["output"]:
                 return None

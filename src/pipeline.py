@@ -12,13 +12,11 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 import time
 from pathlib import Path
-from typing import Optional
 
-from .core.interfaces import TaskContext, SolverResult
-from .core.submission import build_submission, write_submission, score_submission
+from .core.interfaces import SolverResult, TaskContext
+from .core.submission import build_submission, score_submission, write_submission
 from .solvers import REGISTRY
 from .solvers.registry import SolverRegistry
 
@@ -151,9 +149,9 @@ def run_tier3(
 def run_pipeline(
     challenges_path: str,
     output_path: str = "submission.json",
-    solutions_path: Optional[str] = None,
-    model_path: Optional[str] = None,
-    server_url: Optional[str] = None,
+    solutions_path: str | None = None,
+    model_path: str | None = None,
+    server_url: str | None = None,
     skip_tier2: bool = False,
     skip_tier3: bool = False,
     time_limit_s: float = 43200.0,   # 12 h Kaggle limit
@@ -181,7 +179,8 @@ def run_pipeline(
     solved = set(all_results.keys())
     logger.info("After T1: %d/%d solved (%.1f%%)", len(solved), len(tasks), 100*len(solved)/len(tasks))
 
-    remaining_s = lambda: time_limit_s - (time.perf_counter() - wall_start) - margin
+    def remaining_s():
+        return time_limit_s - (time.perf_counter() - wall_start) - margin
 
     # ── Tier 2: Program Synthesis ──────────────────────────────────
     if not skip_tier2 and remaining_s() > 60:
