@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "arc-agi2-hybrid-solver"
+version = "1.0.0"
+description = "3-Tier Hybrid ARC-AGI-2 Solver: DSA + Program Synthesis + Chakra-Ensemble LLM"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "joyjeni" }]
+dependencies = [
+    "torch>=2.1.0",
+    "transformers>=4.45.0",
+    "accelerate>=0.28.0",
+    "peft>=0.10.0",
+    "pyyaml>=6.0.1",
+    "numpy>=1.26.0",
+]
+
+[project.scripts]
+arc-benchmark   = "scripts.benchmark:main"
+arc-validate    = "scripts.validate_submission:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*", "scripts*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts   = "-v --tb=short"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+select = ["E", "F", "I", "N", "W", "UP"]
+ignore = ["E501"]

@@ -1,0 +1,41 @@
+# Pipeline configuration
+# All values here are overridable via environment variables or CLI flags.
+
+pipeline:
+  time_budget_seconds: 32400       # 9 h total (Kaggle limit ~9 h)
+  tier1_budget_seconds: 60
+  tier2_budget_seconds: 1800       # 30 min
+  tier3_budget_seconds: 30540      # remainder
+
+tier1:
+  solver_timeout_seconds: 5
+  parallel_workers: 4
+
+tier2:
+  max_retries: 3
+  exec_timeout_seconds: 10
+  max_tokens: 2048
+  temperature: 0.0
+
+tier3:
+  num_chakra_templates: 8
+  parallel_workers: 8
+  max_tokens: 2048
+  temperature: 0.7
+  vote_threshold: 2                # min votes for a candidate to win
+
+llm:
+  backend: "huggingface"           # huggingface | server | mock
+  model_path: "/kaggle/input/qwen3-4b-grids15-sft139/transformers/sft139/1/"
+  device_map: "auto"
+  load_in_4bit: true
+  max_new_tokens: 2048
+
+submission:
+  fallback_input: true             # use first test-input grid if no prediction
+  output_path: "/kaggle/working/submission.json"
+
+data:
+  test_challenges: "/kaggle/input/arc-prize-2026-arc-agi-2/arc-agi_test-challenges.json"
+  eval_challenges: "/kaggle/input/arc-prize-2026-arc-agi-2/arc-agi_evaluation-challenges.json"
+  eval_solutions: "/kaggle/input/arc-prize-2026-arc-agi-2/arc-agi_evaluation-solutions.json"

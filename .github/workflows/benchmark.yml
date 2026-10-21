@@ -1,0 +1,65 @@
+name: Benchmark — Eval Pass Rate
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      split:
+        description: "Dataset split: train | eval"
+        required: false
+        default: "eval"
+      limit:
+        description: "Number of tasks to benchmark (blank = all)"
+        required: false
+        default: ""
+
+jobs:
+  benchmark:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies (CPU-only)
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers accelerate peft pyyaml numpy pytest
+
+      - name: Download ARC-AGI-2 data
+        env:
+          KAGGLE_USERNAME: ${{ secrets.KAGGLE_USERNAME }}
+          KAGGLE_KEY: ${{ secrets.KAGGLE_KEY }}
+        run: |
+          pip install kaggle
+          kaggle competitions download -c arc-prize-2026-arc-agi-2 -p /tmp/arcdata --unzip
+
+      - name: Run Tier-1 benchmark (DSA only)
+        run: |
+          LIMIT_ARG=""
+          if [ -n "${{ github.event.inputs.limit }}" ]; then
+            LIMIT_ARG="--limit ${{ github.event.inputs.limit }}"
+          fi
+          python scripts/benchmark.py \
+            --split ${{ github.event.inputs.split || 'eval' }} \
+            --tier 1 \
+            --challenges /tmp/arcdata/arc-agi_evaluation-challenges.json \
+            --solutions  /tmp/arcdata/arc-agi_evaluation-solutions.json \
+            --output     /tmp/submission.json \
+            $LIMIT_ARG
+
+      - name: Validate submission
+        run: |
+          python scripts/validate_submission.py --file /tmp/submission.json --verbose
+
+      - name: Upload submission artefact
+        uses: actions/upload-artifact@v4
+        with:
+          name: submission-${{ github.sha }}
+          path: /tmp/submission.json

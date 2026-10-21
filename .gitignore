@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_meta
+
+# Test / Coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Configs with secrets
+*.env
+.env.*
+
+# Kaggle artefacts
+submission.json
+*.log
+
+# Datasets (do not commit ARC data; use Kaggle input)
+data/
+datasets/
+*.json
+!configs/*.json
