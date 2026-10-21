@@ -1,68 +1,42 @@
-name: Submit to ARC-AGI-2 Leaderboard
+name: Submit to Competition Leaderboard
 
 on:
-  # Trigger manually from GitHub Actions UI
   workflow_dispatch:
     inputs:
+      kernel_version:
+        description: "Kaggle kernel version number to submit (e.g. 13)"
+        required: true
+        default: "13"
       message:
-        description: 'Submission message for the leaderboard'
+        description: "Submission description"
         required: false
-        default: 'arc-jeni hybrid DSA+LLM auto-submit'
-  # OR trigger automatically after benchmark succeeds
-  workflow_run:
-    workflows: ["Benchmark"]
-    types: [completed]
+        default: "arc-jeni three-stage pipeline DSA+LLM"
 
 jobs:
   submit:
     runs-on: ubuntu-latest
-    if: >
-      github.event_name == 'workflow_dispatch' ||
-      github.event.workflow_run.conclusion == 'success'
-
     steps:
-      - name: Set up Kaggle CLI
-        run: pip install --upgrade kaggle
-
-      - name: Configure Kaggle credentials
+      - name: Set up Kaggle credentials
         run: |
           mkdir -p ~/.kaggle
           echo '{"username":"${{ secrets.KAGGLE_USERNAME }}","key":"${{ secrets.KAGGLE_KEY }}"}' > ~/.kaggle/kaggle.json
           chmod 600 ~/.kaggle/kaggle.json
 
-      - name: Wait for latest kernel to complete
-        run: |
-          for i in $(seq 1 60); do
-            STATUS=$(kaggle kernels status joyjeni/arc-agi-2-solver-three-stage-pipeline 2>&1)
-            echo "[$i] $STATUS"
-            if echo "$STATUS" | grep -q "COMPLETE"; then
-              echo "Kernel complete."; break
-            fi
-            if echo "$STATUS" | grep -q "ERROR"; then
-              echo "Kernel errored — aborting submit."; exit 1
-            fi
-            sleep 30
-          done
+      - name: Install Kaggle CLI
+        run: pip install kaggle --upgrade -q
 
-      - name: Download submission.json from kernel output
+      - name: Submit notebook to competition leaderboard
         run: |
-          mkdir -p /tmp/kaggle_out
-          kaggle kernels output joyjeni/arc-agi-2-solver-three-stage-pipeline -p /tmp/kaggle_out
-          ls -lh /tmp/kaggle_out/submission.json
-          python3 -c "
-          import json
-          sub = json.load(open('/tmp/kaggle_out/submission.json'))
-          print(f'Tasks in submission: {len(sub)}')
-          t = list(sub.values())[0][0]
-          assert 'attempt_1' in t and 'attempt_2' in t, 'Bad format'
-          print('Format OK: attempt_1 + attempt_2 present')
-          "
-
-      - name: Submit to competition leaderboard
-        run: |
-          MSG="${{ github.event.inputs.message || 'arc-jeni hybrid DSA+LLM auto-submit' }}"
+          VERSION="${{ github.event.inputs.kernel_version }}"
+          MSG="${{ github.event.inputs.message }}"
+          echo "Submitting kernel version $VERSION as code competition entry..."
           kaggle competitions submit \
             -c arc-prize-2026-arc-agi-2 \
-            -f /tmp/kaggle_out/submission.json \
+            --kernel joyjeni/arc-agi-2-solver-three-stage-pipeline \
+            --kernel-version "$VERSION" \
             -m "$MSG"
-          echo "Leaderboard submission complete."
+
+      - name: Confirm submission
+        run: |
+          echo "Checking submission status..."
+          kaggle competitions submissions -c arc-prize-2026-arc-agi-2 | head -5
