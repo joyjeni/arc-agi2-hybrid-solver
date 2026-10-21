@@ -3,7 +3,7 @@ benchmark.py — CLI benchmark runner for arc-jeni-2026.
 
 Usage:
     python scripts/benchmark.py --split eval --config configs/pipeline.yaml
-    python scripts/benchmark.py --split train --tier 1
+    python scripts/benchmark.py --split train --tier 1 --limit 20
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.core.submission import score_submission
+from src.core.submission import build_submission, score_submission
 from src.pipeline import (
     load_challenges,
     load_solutions,
@@ -29,6 +29,7 @@ from src.pipeline import (
 # ---------------------------------------------------------------------------
 # Argument parsing
 # ---------------------------------------------------------------------------
+
 
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
@@ -84,30 +85,25 @@ def _build_parser() -> argparse.ArgumentParser:
 # Tier routing helpers
 # ---------------------------------------------------------------------------
 
+
 def _run_tier1_only(challenges: dict) -> dict:
-    """Run DSA Tier-1 only and return predictions dict."""
-    from src.solvers import REGISTRY  # noqa: F401 — triggers registration
-    predictions: dict = {}
-    for task_id, task_data in challenges.items():
-        result = run_tier1(task_id, task_data)
-        predictions[task_id] = result
-    return predictions
+    """Run DSA Tier-1 only; return competition-format submission dict."""
+    from src.solvers import REGISTRY  # noqa: F401 — triggers solver registration
+
+    tier1_results = run_tier1(challenges, already_solved=set(), registry=REGISTRY)
+    return build_submission(challenges, tier1_results, fallback_input=True)
 
 
-def _print_tier_breakdown(results: dict) -> None:
-    counts: dict[str, int] = {}
-    for preds in results.values():
-        for entry in preds:
-            tier = entry.get("tier", "unknown")
-            counts[tier] = counts.get(tier, 0) + 1
+def _print_tier_summary(tier1_results_count: int, total: int) -> None:
     print("\n--- Tier Distribution ---")
-    for tier, cnt in sorted(counts.items()):
-        print(f"  {tier}: {cnt} predictions")
+    print(f"  Tier-1 (DSA):    {tier1_results_count} solved")
+    print(f"  Fallback:        {total - tier1_results_count} (identity/black)")
 
 
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     parser = _build_parser()
@@ -118,22 +114,21 @@ def main() -> None:
     # ------------------------------------------------------------------
     base_dir = Path("/kaggle/input/arc-prize-2026-arc-agi-2")
     if not base_dir.exists():
-        # Local dev fallback
         base_dir = ROOT / "data"
 
     if args.challenges:
         challenges_path = args.challenges
     elif args.split == "eval":
-        challenges_path = base_dir / "arc-agi_evaluation-challenges.json"
+        challenges_path = base_dir / "arc-agi_evaluation_challenges.json"
     else:
-        challenges_path = base_dir / "arc-agi_training-challenges.json"
+        challenges_path = base_dir / "arc-agi_training_challenges.json"
 
     if args.solutions:
         solutions_path = args.solutions
     elif args.split == "eval":
-        solutions_path = base_dir / "arc-agi_evaluation-solutions.json"
+        solutions_path = base_dir / "arc-agi_evaluation_solutions.json"
     else:
-        solutions_path = base_dir / "arc-agi_training-solutions.json"
+        solutions_path = base_dir / "arc-agi_training_solutions.json"
 
     # ------------------------------------------------------------------
     # Load data
@@ -145,7 +140,7 @@ def main() -> None:
         challenges = {k: challenges[k] for k in task_ids}
     print(f"Tasks loaded: {len(challenges)}")
 
-    solutions = {}
+    solutions: dict = {}
     if solutions_path.exists():
         solutions = load_solutions(str(solutions_path))
         if args.limit:
@@ -158,10 +153,20 @@ def main() -> None:
 
     if args.tier == 1:
         print("\nRunning Tier-1 (DSA) only ...")
-        predictions = _run_tier1_only(challenges)
+        from src.solvers import REGISTRY  # noqa: F401 — triggers registration
+
+        tier1_results = run_tier1(challenges, already_solved=set(), registry=REGISTRY)
+        predictions = build_submission(challenges, tier1_results, fallback_input=True)
+        t1_solved = len(tier1_results)
     else:
         print(f"\nRunning full pipeline (tier={args.tier or 'all'}) ...")
-        predictions = run_pipeline(challenges, config_path=str(args.config))
+        out_path = str(args.output) if args.output else "/tmp/_pipeline_submission.json"
+        predictions = run_pipeline(
+            challenges_path=str(challenges_path),
+            output_path=out_path,
+            solutions_path=str(solutions_path) if solutions_path.exists() else None,
+        )
+        t1_solved = 0  # breakdown not available for full pipeline here
 
     elapsed = time.time() - t0
     print(f"\nBenchmark completed in {elapsed:.1f}s")
@@ -170,13 +175,16 @@ def main() -> None:
     # Score
     # ------------------------------------------------------------------
     if solutions:
-        stats = score_submission(predictions, solutions)
-        total = stats.get("total", len(challenges))
-        correct = stats.get("correct", 0)
-        pct = 100.0 * correct / total if total else 0.0
-        print(f"\n=== Score: {correct}/{total} ({pct:.1f}%) ===")
-
-        _print_tier_breakdown(predictions)
+        accuracy = score_submission(predictions, solutions)
+        # Count total test inputs in solutions
+        total_inputs = sum(len(v) for v in solutions.values() if isinstance(v, list))
+        correct = round(accuracy * total_inputs)
+        pct = 100.0 * accuracy
+        print(f"\n=== Score: {correct}/{total_inputs} test-inputs ({pct:.1f}%) ===")
+        n_tasks = len(challenges)
+        print(f"    Tasks benchmarked: {n_tasks}")
+        if args.tier == 1:
+            _print_tier_summary(t1_solved, n_tasks)
     else:
         print("\n(No solutions file — skipping scoring)")
 
