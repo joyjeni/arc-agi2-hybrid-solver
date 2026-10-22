@@ -28,7 +28,10 @@ from ..core.grid_codec import (
     background_color,
     color_histogram,
     copy_grid,
+    flip_h,
+    flip_v,
     grid_dims,
+    rotate90,
 )
 from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
@@ -1355,4 +1358,883 @@ class AddBorderSolver(BaseSolver):
             return None
         bc = border_colors[0]
         preds = [_mk(self._apply(inp, bc), self.name) for inp in ctx.test_inputs]
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 41. CountNonBgToRowSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class CountNonBgToRowSolver(BaseSolver):
+    """
+    Input: small grid with N non-background cells, all one color C.
+    Output: 1×N row filled entirely with color C.
+    """
+
+    @property
+    def name(self) -> str:
+        return "CountNonBgToRowSolver"
+
+    @property
+    def priority(self) -> int:
+        return 41
+
+    @staticmethod
+    def _extract(grid: Grid, bg: int):
+        """Return (count, color) of non-bg cells, or None if not exactly 1 non-bg color."""
+        non_bg = [cell for row in grid for cell in row if cell != bg]
+        if not non_bg:
+            return None
+        if len(set(non_bg)) != 1:
+            return None
+        return len(non_bg), non_bg[0]
+
+    @staticmethod
+    def _apply(count: int, color: int) -> Grid:
+        return [[color] * count]
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        # Learn the background color from training inputs (must be consistent)
+        train_bgs = [_bg(pair["input"]) for pair in ctx.train_pairs]
+        if len(set(train_bgs)) != 1:
+            return None
+        bg = train_bgs[0]
+
+        learned = []
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            ext = self._extract(inp, bg)
+            if ext is None:
+                return None
+            count, color = ext
+            if len(out) != 1 or len(out[0]) != count:
+                return None
+            if any(cell != color for cell in out[0]):
+                return None
+            learned.append((count, color))
+        # Guard: if all training counts are identical the rule is ambiguous
+        # (could be a fixed-width output, not a true count-based transform)
+        counts = [c for c, _ in learned]
+        if len(learned) >= 2 and len(set(counts)) == 1:
+            return None
+        preds = []
+        for inp in ctx.test_inputs:
+            # Use the learned bg, not the per-grid majority (test bg may flip)
+            ext = self._extract(inp, bg)
+            if ext is None:
+                return None
+            count, color = ext
+            preds.append(_mk(self._apply(count, color), self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 42. Stride2SampleSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class Stride2SampleSolver(BaseSolver):
+    """
+    Input: 2H × 2W grid.
+    Output: H × W grid by taking every even-indexed row and column (stride 2).
+    """
+
+    @property
+    def name(self) -> str:
+        return "Stride2SampleSolver"
+
+    @property
+    def priority(self) -> int:
+        return 42
+
+    @staticmethod
+    def _apply(grid: Grid) -> Grid:
+        return [row[::2] for row in grid[::2]]
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            ri, ci = _dims(inp)
+            ro, co = _dims(out)
+            if ri % 2 != 0 or ci % 2 != 0:
+                return None
+            if ro != ri // 2 or co != ci // 2:
+                return None
+            if self._apply(inp) != out:
+                return None
+        preds = [_mk(self._apply(inp), self.name) for inp in ctx.test_inputs]
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 43. CrossExpandSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class CrossExpandSolver(BaseSolver):
+    """
+    Each non-bg dot at (r, c) → full horizontal + vertical lines (dot_color),
+    dot replaced with center_color, four diagonal neighbors replaced with diag_color.
+    Colors are learned from training pairs.
+    """
+
+    @property
+    def name(self) -> str:
+        return "CrossExpandSolver"
+
+    @property
+    def priority(self) -> int:
+        return 43
+
+    @staticmethod
+    def _expand(grid: Grid, bg: int, dot_color: int, center_color: int, diag_color: int) -> Grid:
+        rows, cols = len(grid), len(grid[0])
+        out = [[bg] * cols for _ in range(rows)]
+        dots = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] != bg]
+        for dr, dc in dots:
+            for c in range(cols):
+                out[dr][c] = dot_color
+            for r in range(rows):
+                out[r][dc] = dot_color
+        for dr, dc in dots:
+            out[dr][dc] = center_color
+        for dr, dc in dots:
+            for delta_r, delta_c in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = dr + delta_r, dc + delta_c
+                if 0 <= nr < rows and 0 <= nc < cols:
+                    out[nr][nc] = diag_color
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        dot_colors, center_colors, diag_colors = [], [], []
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if _dims(inp) != _dims(out):
+                return None
+            bg = _bg(inp)
+            rows, cols = _dims(inp)
+            dots = [(r, c) for r in range(rows) for c in range(cols) if inp[r][c] != bg]
+            if not dots:
+                return None
+            dc_set = set(inp[r][c] for r, c in dots)
+            if len(dc_set) != 1:
+                return None
+            dot_color = dc_set.pop()
+            # center color: what's at dot positions in output
+            ctr_set = set(out[r][c] for r, c in dots)
+            if len(ctr_set) != 1:
+                return None
+            center_color = ctr_set.pop()
+            if center_color in (bg, dot_color):
+                return None
+            # diag color
+            diag_set = set()
+            for dr, dc in dots:
+                for delta_r, delta_c in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                    nr, nc = dr + delta_r, dc + delta_c
+                    if 0 <= nr < rows and 0 <= nc < cols:
+                        v = out[nr][nc]
+                        if v not in (bg, dot_color, center_color):
+                            diag_set.add(v)
+            if len(diag_set) != 1:
+                return None
+            diag_color = diag_set.pop()
+            expected = self._expand(inp, bg, dot_color, center_color, diag_color)
+            if expected != out:
+                return None
+            dot_colors.append(dot_color)
+            center_colors.append(center_color)
+            diag_colors.append(diag_color)
+        if not dot_colors:
+            return None
+        if len(set(dot_colors)) != 1 or len(set(center_colors)) != 1 or len(set(diag_colors)) != 1:
+            return None
+        dc, cc, dgc = dot_colors[0], center_colors[0], diag_colors[0]
+        preds = []
+        for inp in ctx.test_inputs:
+            bg = _bg(inp)
+            preds.append(_mk(self._expand(inp, bg, dc, cc, dgc), self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 44. FillRectInteriorSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class FillRectInteriorSolver(BaseSolver):
+    """
+    Find a closed rectangular frame; find fill material (non-bg, non-frame cells);
+    project fill material shape (solid rect or L) into frame interior; erase material.
+    """
+
+    @property
+    def name(self) -> str:
+        return "FillRectInteriorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 44
+
+    @staticmethod
+    def _find_frame(grid: Grid, bg: int):
+        """Return (top, left, bottom, right, frame_color) or None."""
+        rows, cols = len(grid), len(grid[0])
+        color_cells: dict[int, list] = {}
+        for r in range(rows):
+            for c in range(cols):
+                v = grid[r][c]
+                if v != bg:
+                    color_cells.setdefault(v, []).append((r, c))
+        for color, cells in color_cells.items():
+            rs = [r for r, c in cells]
+            cs = [c for r, c in cells]
+            top, bottom = min(rs), max(rs)
+            left, right = min(cs), max(cs)
+            if top == bottom or left == right:
+                continue
+            expected_border: set = set()
+            for r in range(top, bottom + 1):
+                expected_border.add((r, left))
+                expected_border.add((r, right))
+            for c in range(left, right + 1):
+                expected_border.add((top, c))
+                expected_border.add((bottom, c))
+            if set(cells) == expected_border:
+                return (top, left, bottom, right, color)
+        return None
+
+    @staticmethod
+    def _classify_shape(cells):
+        """Classify fill shape as 'solid_rect' or 'L_shape'. Return (type, meta) or None."""
+        if not cells:
+            return None, None
+        cell_set = set(cells)
+        rs = [r for r, c in cells]
+        cs = [c for r, c in cells]
+        min_r, max_r = min(rs), max(rs)
+        min_c, max_c = min(cs), max(cs)
+        h = max_r - min_r + 1
+        w = max_c - min_c + 1
+        if len(cells) == h * w:
+            return 'solid_rect', {'h': h, 'w': w}
+        # Try L-shape: one corner + two perpendicular arms sharing an endpoint
+        for corner_r, corner_c in cells:
+            same_row = [c for r2, c in cells if r2 == corner_r]
+            same_col = [r2 for r2, c in cells if c == corner_c]
+            if len(same_row) > 1 and len(same_col) > 1:
+                arm_cells = set()
+                for c in same_row:
+                    arm_cells.add((corner_r, c))
+                for r in same_col:
+                    arm_cells.add((r, corner_c))
+                if arm_cells == cell_set:
+                    h_dir = 'right' if any(c > corner_c for c in same_row) else 'left'
+                    v_dir = 'down' if any(r > corner_r for r in same_col) else 'up'
+                    return 'L_shape', {
+                        'corner': (corner_r, corner_c),
+                        'h_dir': h_dir, 'v_dir': v_dir,
+                        'h_len': len(same_row), 'v_len': len(same_col),
+                    }
+        return None, None
+
+    @staticmethod
+    def _fill_interior(grid: Grid, bg: int, frame_color: int,
+                       top: int, left: int, bottom: int, right: int,
+                       fill_cells, fill_color: int) -> Grid | None:
+        rows, cols = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        # Erase fill material
+        for r, c in fill_cells:
+            out[r][c] = bg
+        shape_type, meta = FillRectInteriorSolver._classify_shape(fill_cells)
+        if shape_type is None:
+            return None
+        int_rows = range(top + 1, bottom)
+        int_cols = range(left + 1, right)
+        if not int_rows or not int_cols:
+            return None
+        if shape_type == 'solid_rect':
+            for r in int_rows:
+                for c in int_cols:
+                    out[r][c] = fill_color
+        elif shape_type == 'L_shape':
+            # Anchor L corner to nearest interior corner based on fill material position
+            fill_rs = [r for r, c in fill_cells]
+            fill_cs = [c for r, c in fill_cells]
+            fill_cr = sum(fill_rs) / len(fill_rs)
+            fill_cc = sum(fill_cs) / len(fill_cs)
+            frame_cr = (top + bottom) / 2
+            frame_cc = (left + right) / 2
+            int_r = top + 1 if fill_cr < frame_cr else bottom - 1
+            int_c = left + 1 if fill_cc < frame_cc else right - 1
+            h_dir = meta['h_dir']
+            v_dir = meta['v_dir']
+            # Horizontal arm
+            if h_dir == 'right':
+                for c in range(int_c, right):
+                    out[int_r][c] = fill_color
+            else:
+                for c in range(left + 1, int_c + 1):
+                    out[int_r][c] = fill_color
+            # Vertical arm
+            if v_dir == 'down':
+                for r in range(int_r, bottom):
+                    out[r][int_c] = fill_color
+            else:
+                for r in range(top + 1, int_r + 1):
+                    out[r][int_c] = fill_color
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if _dims(inp) != _dims(out):
+                return None
+            bg = _bg(inp)
+            frame = self._find_frame(inp, bg)
+            if frame is None:
+                return None
+            top, left, bottom, right, fc = frame
+            fill_cells = [(r, c) for r in range(len(inp)) for c in range(len(inp[0]))
+                          if inp[r][c] != bg and inp[r][c] != fc]
+            if not fill_cells:
+                return None
+            fill_clr_set = set(inp[r][c] for r, c in fill_cells)
+            if len(fill_clr_set) != 1:
+                return None
+            fill_color = fill_clr_set.pop()
+            expected = self._fill_interior(inp, bg, fc, top, left, bottom, right, fill_cells, fill_color)
+            if expected is None or expected != out:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            bg = _bg(inp)
+            frame = self._find_frame(inp, bg)
+            if frame is None:
+                return None
+            top, left, bottom, right, fc = frame
+            fill_cells = [(r, c) for r in range(len(inp)) for c in range(len(inp[0]))
+                          if inp[r][c] != bg and inp[r][c] != fc]
+            if not fill_cells:
+                return None
+            fill_clr_set = set(inp[r][c] for r, c in fill_cells)
+            if len(fill_clr_set) != 1:
+                return None
+            fill_color = fill_clr_set.pop()
+            result = self._fill_interior(inp, bg, fc, top, left, bottom, right, fill_cells, fill_color)
+            if result is None:
+                return None
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 45. TiledGridPropagationSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class TiledGridPropagationSolver(BaseSolver):
+    """
+    Grid divided by all-background separator rows/cols into an N×M tile array.
+    Propagate markers: if two tiles in the same tile-row (or tile-col) both have
+    a marker at the same local position, fill all tiles between them with that marker.
+    """
+
+    @property
+    def name(self) -> str:
+        return "TiledGridPropagationSolver"
+
+    @property
+    def priority(self) -> int:
+        return 45
+
+    @staticmethod
+    def _separators(grid: Grid, bg: int):
+        rows, cols = len(grid), len(grid[0])
+        sep_r = [r for r in range(rows) if all(grid[r][c] == bg for c in range(cols))]
+        sep_c = [c for c in range(cols) if all(grid[r][c] == bg for r in range(rows))]
+        return sep_r, sep_c
+
+    @staticmethod
+    def _segments(size: int, seps: list) -> list:
+        bounds = [-1] + sorted(seps) + [size]
+        segs = []
+        for i in range(len(bounds) - 1):
+            s, e = bounds[i] + 1, bounds[i + 1] - 1
+            if s <= e:
+                segs.append((s, e))
+        return segs
+
+    @staticmethod
+    def _propagate(grid: Grid, bg: int) -> Grid | None:
+        rows, cols = len(grid), len(grid[0])
+        sep_r, sep_c = TiledGridPropagationSolver._separators(grid, bg)
+        if not sep_r and not sep_c:
+            return None
+        row_segs = TiledGridPropagationSolver._segments(rows, sep_r)
+        col_segs = TiledGridPropagationSolver._segments(cols, sep_c)
+        if len(row_segs) < 2 and len(col_segs) < 2:
+            return None
+        out = [row[:] for row in grid]
+        # Build marker_map: (lr, lc) -> {(tri, tci): color}
+        marker_map: dict = {}
+        for tri, (r0, r1) in enumerate(row_segs):
+            for tci, (c0, c1) in enumerate(col_segs):
+                for lr in range(r1 - r0 + 1):
+                    for lc in range(c1 - c0 + 1):
+                        v = grid[r0 + lr][c0 + lc]
+                        if v != bg:
+                            key = (lr, lc)
+                            marker_map.setdefault(key, {})[tri, tci] = v
+        for (lr, lc), tile_colors in marker_map.items():
+            if len(tile_colors) < 2:
+                continue
+            color = next(iter(tile_colors.values()))
+            tiles = list(tile_colors.keys())
+            # Same tile-row propagation
+            row_groups: dict = {}
+            for (tri, tci) in tiles:
+                row_groups.setdefault(tri, []).append(tci)
+            for tri, tci_list in row_groups.items():
+                if len(tci_list) >= 2:
+                    for tci in range(min(tci_list), max(tci_list) + 1):
+                        r0, _ = row_segs[tri]
+                        c0, _ = col_segs[tci]
+                        out[r0 + lr][c0 + lc] = color
+            # Same tile-col propagation
+            col_groups: dict = {}
+            for (tri, tci) in tiles:
+                col_groups.setdefault(tci, []).append(tri)
+            for tci, tri_list in col_groups.items():
+                if len(tri_list) >= 2:
+                    for tri in range(min(tri_list), max(tri_list) + 1):
+                        r0, _ = row_segs[tri]
+                        c0, _ = col_segs[tci]
+                        out[r0 + lr][c0 + lc] = color
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if _dims(inp) != _dims(out):
+                return None
+            bg = _bg(inp)
+            sep_r, sep_c = self._separators(inp, bg)
+            if not sep_r and not sep_c:
+                return None
+            expected = self._propagate(inp, bg)
+            if expected is None or expected != out:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            bg = _bg(inp)
+            sep_r, sep_c = self._separators(inp, bg)
+            if not sep_r and not sep_c:
+                return None
+            result = self._propagate(inp, bg)
+            if result is None:
+                return None
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 46. WallToTargetLineSolver
+# ─────────────────────────────────────────────────────────────────────────────
+
+@register_solver
+class WallToTargetLineSolver(BaseSolver):
+    """
+    Two vertical wall segments (color 2).
+    Wall A has color-8 dots: draw 8-line from wall inner edge to dot, mark dot as color 4.
+    Wall B mirrors: same relative rows filled entirely with 8s between walls.
+    """
+
+    @property
+    def name(self) -> str:
+        return "WallToTargetLineSolver"
+
+    @property
+    def priority(self) -> int:
+        return 46
+
+    WALL_COLOR = 2
+    DOT_COLOR = 8
+    MARK_COLOR = 4
+
+    @staticmethod
+    def _find_wall_col_groups(grid: Grid) -> list:
+        """Return list of sorted column-index groups where wall color is present."""
+        rows, cols = len(grid), len(grid[0])
+        wc = WallToTargetLineSolver.WALL_COLOR
+        wall_cols = [c for c in range(cols) if any(grid[r][c] == wc for r in range(rows))]
+        if not wall_cols:
+            return []
+        groups, group = [], [wall_cols[0]]
+        for c in wall_cols[1:]:
+            if c == group[-1] + 1:
+                group.append(c)
+            else:
+                groups.append(group)
+                group = [c]
+        groups.append(group)
+        return groups
+
+    @staticmethod
+    def _wall_row_range(grid: Grid, wall_cols: list) -> tuple:
+        rows = len(grid)
+        wc = WallToTargetLineSolver.WALL_COLOR
+        active = [r for r in range(rows) if any(grid[r][c] == wc for c in wall_cols)]
+        return (min(active), max(active)) if active else (0, rows - 1)
+
+    @staticmethod
+    def _apply(grid: Grid, bg: int) -> Grid | None:
+        rows, cols = len(grid), len(grid[0])
+        wc = WallToTargetLineSolver.WALL_COLOR
+        dc = WallToTargetLineSolver.DOT_COLOR
+        mc = WallToTargetLineSolver.MARK_COLOR
+        groups = WallToTargetLineSolver._find_wall_col_groups(grid)
+        if len(groups) < 2:
+            return None
+        # Identify which wall has dots (Wall A) and which doesn't (Wall B)
+        wall_a, wall_b = None, None
+        for g in groups:
+            r0, r1 = WallToTargetLineSolver._wall_row_range(grid, g)
+            has_dots = any(grid[r][c] == dc
+                          for r in range(r0, r1 + 1)
+                          for c in range(cols)
+                          if c not in g)
+            if has_dots:
+                wall_a = g
+            else:
+                wall_b = g
+        if wall_a is None or wall_b is None:
+            # Fallback: assign first as A, second as B
+            wall_a, wall_b = groups[0], groups[1]
+        a_r0, a_r1 = WallToTargetLineSolver._wall_row_range(grid, wall_a)
+        b_r0, b_r1 = WallToTargetLineSolver._wall_row_range(grid, wall_b)
+        # Wall A inner edge (col facing interior)
+        mid = cols // 2
+        a_inner = wall_a[-1] + 1 if wall_a[-1] < mid else wall_a[0] - 1
+        b_inner = wall_b[-1] + 1 if wall_b[-1] < mid else wall_b[0] - 1
+        out = [row[:] for row in grid]
+        # Collect dot offsets from Wall A
+        dot_offsets = []
+        for r in range(a_r0, a_r1 + 1):
+            for c in range(cols):
+                if c not in wall_a and grid[r][c] == dc:
+                    dot_offsets.append((r - a_r0, r, c))
+        if not dot_offsets:
+            return None
+        # Process Wall A: line from inner edge to dot, mark dot
+        for (offset, r, c_dot) in dot_offsets:
+            if a_inner <= c_dot:
+                for c in range(a_inner, c_dot):
+                    out[r][c] = dc
+                out[r][c_dot] = mc
+            else:
+                for c in range(c_dot + 1, a_inner + 1):
+                    out[r][c] = dc
+                out[r][c_dot] = mc
+        # Process Wall B: fill corresponding relative rows with 8s
+        # Determine fill range for Wall B (from inner edge toward Wall A)
+        if b_inner < a_inner:
+            b_fill_start, b_fill_end = b_inner, a_inner - 1
+        else:
+            b_fill_start, b_fill_end = a_inner + 1, b_inner
+        for (offset, r_a, c_dot) in dot_offsets:
+            r_b = b_r0 + offset
+            if 0 <= r_b < rows:
+                for c in range(b_fill_start, b_fill_end + 1):
+                    out[r_b][c] = dc
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if _dims(inp) != _dims(out):
+                return None
+            bg = _bg(inp)
+            if not any(inp[r][c] == self.WALL_COLOR
+                       for r in range(len(inp)) for c in range(len(inp[0]))):
+                return None
+            expected = self._apply(inp, bg)
+            if expected is None or expected != out:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            bg = _bg(inp)
+            result = self._apply(inp, bg)
+            if result is None:
+                return None
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# Priority 47 – MirrorTileSolver
+# ---------------------------------------------------------------------------
+
+@register_solver
+class MirrorTileSolver(BaseSolver):
+    """
+    2×2 tile arrangement using input, flip_h, flip_v, rot180.
+    Learns which of the 4 quadrant-arrangement variants matches training pairs.
+    Targets: 0c786b71, 3af2c5a8, 62c24649, 67e8384a, 833dafe3.
+    """
+
+    @property
+    def name(self) -> str:
+        return "MirrorTileSolver"
+
+    @property
+    def priority(self) -> int:
+        return 47
+
+    @staticmethod
+    def _variants(inp: Grid) -> dict:
+        """Return all 4 canonical 2×2-tile arrangements keyed by variant id."""
+        o = inp
+        h = flip_h(inp)
+        v = flip_v(inp)
+        r = flip_h(flip_v(inp))   # rot180
+        R, C = len(inp), len(inp[0])
+
+        def tile(tl, tr, bl, br):
+            top = [tl[row] + tr[row] for row in range(R)]
+            bot = [bl[row] + br[row] for row in range(R)]
+            return top + bot
+
+        return {
+            "OHVR": tile(o, h, v, r),
+            "HOVR": tile(h, o, r, v),   # orig shifted to TR
+            "VROH": tile(v, r, o, h),   # orig shifted to BL
+            "RVHO": tile(r, v, h, o),   # orig shifted to BR
+        }
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not ctx.train_pairs:
+            return None
+        # Determine which variant is consistent across all training pairs
+        chosen = None
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            H, W = len(inp), len(inp[0])
+            if len(out) != 2 * H or len(out[0]) != 2 * W:
+                return None
+            variants = self._variants(inp)
+            matches = {k for k, v in variants.items() if v == out}
+            if not matches:
+                return None
+            if chosen is None:
+                chosen = matches
+            else:
+                chosen = chosen & matches
+        if not chosen:
+            return None
+        variant_key = next(iter(chosen))
+        preds = []
+        for inp in ctx.test_inputs:
+            variants = self._variants(inp)
+            result = variants[variant_key]
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# Priority 48 – SelfTileZeroSolver
+# ---------------------------------------------------------------------------
+
+@register_solver
+class SelfTileZeroSolver(BaseSolver):
+    """
+    Square input H×H → output H²×H².
+    For tile position (tr, tc):
+      inp[tr][tc] != 0  → tile = full input
+      inp[tr][tc] == 0  → tile = H×H all-zeros
+    Targets: 007bbfb7, 5b6cbef5.
+    """
+
+    @property
+    def name(self) -> str:
+        return "SelfTileZeroSolver"
+
+    @property
+    def priority(self) -> int:
+        return 48
+
+    @staticmethod
+    def _apply(inp: Grid) -> Grid | None:
+        H = len(inp)
+        if H == 0 or len(inp[0]) != H:
+            return None
+        zero_tile = [[0] * H for _ in range(H)]
+        out = []
+        for tr in range(H):
+            row_blocks = []
+            for tc in range(H):
+                tile = inp if inp[tr][tc] != 0 else zero_tile
+                row_blocks.append(tile)
+            # merge H rows of H blocks
+            for r in range(H):
+                out.append([cell for blk in row_blocks for cell in blk[r]])
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            H = len(inp)
+            if len(inp[0]) != H:
+                return None
+            expected = self._apply(inp)
+            if expected is None or expected != out:
+                return None
+            if len(out) != H * H or len(out[0]) != H * H:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            result = self._apply(inp)
+            if result is None:
+                return None
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# Priority 49 – RowAltFlipTileSolver
+# ---------------------------------------------------------------------------
+
+@register_solver
+class RowAltFlipTileSolver(BaseSolver):
+    """
+    3×3 tiling:
+      Tile-rows 0,2  → input repeated 3× horizontally (no flip)
+      Tile-row  1    → flip_h(input) repeated 3× horizontally
+    Learns the alternation pattern (even=orig/odd=fh or even=fh/odd=orig)
+    and the number of tile-columns from training pairs.
+    Targets: 00576224.
+    """
+
+    @property
+    def name(self) -> str:
+        return "RowAltFlipTileSolver"
+
+    @property
+    def priority(self) -> int:
+        return 49
+
+    @staticmethod
+    def _apply(inp: Grid, tcols: int, even_is_orig: bool) -> Grid:
+        fh = flip_h(inp)
+        out = []
+        H, W = len(inp), len(inp[0])
+        for tr in range(3):
+            tile = inp if (tr % 2 == 0) == even_is_orig else fh
+            for r in range(H):
+                out.append(tile[r] * tcols)
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not ctx.train_pairs:
+            return None
+        chosen_tcols = None
+        chosen_even = None
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            H, W = len(inp), len(inp[0])
+            if len(out) != 3 * H:
+                return None
+            out_w = len(out[0])
+            if out_w % W != 0:
+                return None
+            tcols = out_w // W
+            if chosen_tcols is None:
+                chosen_tcols = tcols
+            elif chosen_tcols != tcols:
+                return None
+            found = False
+            for even_is_orig in (True, False):
+                candidate = self._apply(inp, tcols, even_is_orig)
+                if candidate == out:
+                    if chosen_even is None:
+                        chosen_even = even_is_orig
+                    elif chosen_even != even_is_orig:
+                        return None
+                    found = True
+                    break
+            if not found:
+                return None
+        if chosen_tcols is None or chosen_even is None:
+            return None
+        preds = []
+        for inp in ctx.test_inputs:
+            result = self._apply(inp, chosen_tcols, chosen_even)
+            preds.append(_mk(result, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# Priority 50 – FixedRecolorSolver
+# ---------------------------------------------------------------------------
+
+@register_solver
+class FixedRecolorSolver(BaseSolver):
+    """
+    Learn a consistent bijective color mapping from all training pairs,
+    then apply the same mapping to every test input.
+    Grid size is unchanged.
+    Targets: 63613498 (9→5), aabf363d (3→6, 6→0).
+    """
+
+    @property
+    def name(self) -> str:
+        return "FixedRecolorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 50
+
+    @staticmethod
+    def _learn_mapping(pairs: list) -> dict | None:
+        """Return color→color mapping consistent across all pairs, or None."""
+        mapping = {}
+        changed_sets = []
+        for pair in pairs:
+            inp, out = pair["input"], pair["output"]
+            if _dims(inp) != _dims(out):
+                return None
+            changed = set()
+            for r in range(len(inp)):
+                for c in range(len(inp[0])):
+                    src, dst = inp[r][c], out[r][c]
+                    if src in mapping:
+                        if mapping[src] != dst:
+                            return None
+                    else:
+                        mapping[src] = dst
+                    if src != dst:
+                        changed.add(src)
+            changed_sets.append(frozenset(changed))
+        # Must change at least one color
+        if all(k == v for k, v in mapping.items()):
+            return None
+        # All pairs must change the same set of source colors
+        if len(set(changed_sets)) > 1:
+            return None
+        return mapping
+
+    @staticmethod
+    def _apply_mapping(grid: Grid, mapping: dict) -> Grid:
+        return [[mapping.get(cell, cell) for cell in row] for row in grid]
+
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        mapping = self._learn_mapping(ctx.train_pairs)
+        if mapping is None:
+            return None
+        preds = []
+        for inp in ctx.test_inputs:
+            result = self._apply_mapping(inp, mapping)
+            preds.append(_mk(result, self.name))
         return _res(ctx.task_id, preds)
