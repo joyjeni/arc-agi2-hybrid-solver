@@ -247,13 +247,20 @@ class CCRecolorBySizeSolver(BaseSolver):
 
     @staticmethod
     def _rank_color_map(inp: Grid, out: Grid) -> dict[int, int] | None:
+        # Require same dimensions — can't map cell-to-cell otherwise
+        if len(inp) != len(out) or (inp and out and len(inp[0]) != len(out[0])):
+            return None
         comps = _connected_components(inp)
         if not comps:
             return None
         comps_sorted = sorted(comps, key=len, reverse=True)
+        rows_out = len(out)
+        cols_out = len(out[0]) if out else 0
         color_map: dict[int, int] = {}
         for comp in comps_sorted:
             r, c = comp[0]
+            if r >= rows_out or c >= cols_out:
+                return None
             old_c = inp[r][c]
             new_c = out[r][c]
             if old_c in color_map and color_map[old_c] != new_c:
@@ -275,9 +282,21 @@ class CCRecolorBySizeSolver(BaseSolver):
         )
         if ref_map is None:
             return None
-        for pair in ctx.train_pairs[1:]:
+        # Reject identity maps — every color maps to itself (no real transformation)
+        if all(k == v for k, v in ref_map.items()):
+            return None
+        # Verify map produces correct output for ALL training pairs
+        for pair in ctx.train_pairs:
             m = self._rank_color_map(pair["input"], pair["output"])
             if m != ref_map:
+                return None
+            # Hard check: applying the map must reproduce the training output exactly
+            applied = self._apply(pair["input"], ref_map)
+            pr, pc = len(pair["output"]), len(pair["output"][0]) if pair["output"] else 0
+            ar, ac = len(applied), len(applied[0]) if applied else 0
+            if (pr, pc) != (ar, ac):
+                return None
+            if applied != pair["output"]:
                 return None
         preds = [
             _make_prediction(self._apply(inp, ref_map), self.name)
