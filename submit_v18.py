@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Poll until v18 kernel is COMPLETE, then submit to competition."""
+"""Submit v18 kernel output to competition — retries until daily limit resets at midnight UTC."""
 import os, sys, time, subprocess, requests
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from requests.auth import HTTPBasicAuth
 
 os.environ['KAGGLE_USERNAME'] = 'joyjeni'
@@ -23,33 +23,28 @@ def log(msg):
     line = f'[{now}] {msg}'
     print(line, flush=True)
 
-log("Polling v18 kernel status (every 2 min)...")
-max_polls = 200  # ~400 min max wait
-for _ in range(max_polls):
-    result = subprocess.run(
-        ['kaggle', 'kernels', 'status', 'joyjeni/arc-agi-2-solver-three-stage-pipeline'],
-        capture_output=True, text=True
-    )
-    status_text = result.stdout.strip() + result.stderr.strip()
-    log(f"Status: {status_text}")
-    if 'COMPLETE' in status_text.upper():
-        log("Kernel COMPLETE — proceeding to submit")
-        break
-    if 'ERROR' in status_text.upper() or 'CANCEL' in status_text.upper():
-        log("Kernel ERROR/CANCELLED — falling back to v17")
-        DATA['kernelVersion'] = '17'
-        DATA['submissionDescription'] = 'v17 fallback: T0 240/240 direct lookup'
-        break
-    time.sleep(120)
+def secs_until_utc_midnight():
+    now = datetime.now(timezone.utc)
+    midnight = (now + timedelta(days=1)).replace(hour=0, minute=5, second=0, microsecond=0)
+    return max(0, (midnight - now).total_seconds())
 
+# v18 kernel already COMPLETE — go straight to submit loop
+log("v18 kernel already COMPLETE — entering submit loop")
 log(f"Submitting kernelVersion={DATA['kernelVersion']} ...")
-for attempt in range(1, 6):
+
+for attempt in range(1, 1000):
     r = requests.post(SUBMIT_URL, data=DATA, auth=AUTH)
-    log(f"Attempt {attempt}/5 — HTTP {r.status_code}: {r.text[:400]}")
+    log(f"Attempt {attempt} — HTTP {r.status_code}: {r.text[:400]}")
     if r.status_code == 200:
-        log("SUCCESS!"); sys.exit(0)
+        log("SUCCESS! Submission accepted."); sys.exit(0)
     if 'daily Submission allowance' in r.text:
-        log("Daily limit — sleeping 10 min..."); time.sleep(600)
+        wait = secs_until_utc_midnight()
+        log(f"Daily limit hit — sleeping {wait/3600:.1f} h until midnight UTC reset...")
+        time.sleep(wait)
+        log("Woke up after midnight UTC — retrying submission...")
+    elif r.status_code in (429, 503):
+        log("Rate limited — sleeping 5 min..."); time.sleep(300)
     else:
-        time.sleep(60)
-log("All retries exhausted."); sys.exit(1)
+        log("Unexpected error — sleeping 2 min..."); time.sleep(120)
+
+log("Exhausted retries."); sys.exit(1)
