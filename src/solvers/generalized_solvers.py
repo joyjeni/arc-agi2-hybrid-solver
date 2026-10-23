@@ -3875,3 +3875,460 @@ class AlignToColorOneSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
         results = [self._transform(t) for t in ctx.test_inputs]
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ShiftNonBgDown1Solver — task 25ff71a9
+# Rule: shift every non-zero cell down exactly 1 row; cells at last row vanish.
+# ---------------------------------------------------------------------------
+@register_solver
+class ShiftNonBgDown1Solver(BaseSolver):
+    name = "ShiftNonBgDown1Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [[0] * C for _ in range(R)]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 0:
+                    nr = r + 1
+                    if nr < R:
+                        out[nr][c] = grid[r][c]
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# Rotate180Solver — tasks 3c9b0459, 6150a2bd
+# Rule: 180° rotation; new[r][c] = old[R-1-r][C-1-c].
+# ---------------------------------------------------------------------------
+@register_solver
+class Rotate180Solver(BaseSolver):
+    name = "Rotate180Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        return [[grid[R-1-r][C-1-c] for c in range(C)] for r in range(R)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# Rotate90CCWSolver — task ed36ccf7
+# Rule: 90° counter-clockwise; output is C×R; new[nr][nc] = old[nc][C-1-nr].
+# ---------------------------------------------------------------------------
+@register_solver
+class Rotate90CCWSolver(BaseSolver):
+    name = "Rotate90CCWSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        # output dimensions: C rows × R cols
+        return [[grid[nc][C-1-nr] for nc in range(R)] for nr in range(C)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            out = pair["output"]
+            R, C = len(inp), len(inp[0])
+            if len(out) != C or len(out[0]) != R:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != out:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# MaxFreqKeepSolver — task 9565186b
+# Rule: find most-frequent non-zero color; keep those cells; replace every
+# other cell (including background 0) with 5.
+# ---------------------------------------------------------------------------
+@register_solver
+class MaxFreqKeepSolver(BaseSolver):
+    name = "MaxFreqKeepSolver"
+
+    def _dominant(self, grid):
+        from collections import Counter
+        counts = Counter(cell for row in grid for cell in row if cell != 0)
+        return counts.most_common(1)[0][0] if counts else None
+
+    def _transform(self, grid):
+        dom = self._dominant(grid)
+        if dom is None:
+            return grid
+        return [[cell if cell == dom else 5 for cell in row] for row in grid]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# TwoRowCheckerSolver — task e9afcf9a
+# Rule: input has exactly 2 uniform rows (all-A, all-B).
+# Output is a checkerboard: row r, col c → A if (r+c)%2==0 else B.
+# ---------------------------------------------------------------------------
+@register_solver
+class TwoRowCheckerSolver(BaseSolver):
+    name = "TwoRowCheckerSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        A = grid[0][0]
+        B = grid[1][0] if R > 1 else A
+        return [[(A if (r + c) % 2 == 0 else B) for c in range(C)] for r in range(R)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            if len(inp) != 2:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            A, B = inp[0][0], inp[1][0]
+            if not all(cell == A for cell in inp[0]) or not all(cell == B for cell in inp[1]):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# DiagonalBarSolver — task 3bd67248
+# Input: column 0 is a non-zero color; all other cells are 0.
+# Rule: place 2s on the anti-diagonal (0,C-1)→(R-2,1); fill last row
+# cols 1..C-1 with 4; column 0 unchanged.
+# ---------------------------------------------------------------------------
+@register_solver
+class DiagonalBarSolver(BaseSolver):
+    name = "DiagonalBarSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for i in range(min(R - 1, C - 1)):
+            out[i][C - 1 - i] = 2
+        for c in range(1, C):
+            out[R - 1][c] = 4
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            # Validate structural precondition
+            R, C = len(inp), len(inp[0])
+            if any(inp[r][c] != 0 for r in range(R) for c in range(1, C)):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ShiftDown1Recolor2Solver — task a79310a0
+# Rule: shift every non-zero cell down 1 row AND recolor it to 2.
+# ---------------------------------------------------------------------------
+@register_solver
+class ShiftDown1Recolor2Solver(BaseSolver):
+    name = "ShiftDown1Recolor2Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [[0] * C for _ in range(R)]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 0:
+                    nr = r + 1
+                    if nr < R:
+                        out[nr][c] = 2
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColPositionToColorSolver — task a85d4709
+# Input: each row contains exactly one 5; rest are 0s.
+# Rule: the column index of the 5 determines a uniform fill color for the
+# whole row (mapping learned from training pairs).
+# ---------------------------------------------------------------------------
+@register_solver
+class ColPositionToColorSolver(BaseSolver):
+    name = "ColPositionToColorSolver"
+
+    def _learn_mapping(self, ctx: TaskContext):
+        mapping = {}
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if len(inp) != len(out):
+                return None
+            for r in range(len(inp)):
+                if r >= len(out) or len(inp[r]) != len(out[r]):
+                    return None
+                fives = [c for c in range(len(inp[r])) if inp[r][c] == 5]
+                if len(fives) != 1:
+                    return None
+                col = fives[0]
+                colors = set(out[r])
+                if len(colors) != 1:
+                    return None
+                fill = list(colors)[0]
+                if col in mapping and mapping[col] != fill:
+                    return None
+                mapping[col] = fill
+        return mapping
+
+    def _transform(self, grid, mapping):
+        R, C = len(grid), len(grid[0])
+        out = []
+        for r in range(R):
+            fives = [c for c in range(C) if grid[r][c] == 5]
+            col = fives[0] if fives else 0
+            out.append([mapping.get(col, 0)] * C)
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        mapping = self._learn_mapping(ctx)
+        if not mapping:
+            return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"], mapping) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t, mapping) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColumnFillDownSolver — task d037b0a7
+# Rule: per-column fill-down: a non-zero value propagates downward through
+# all subsequent zero cells in the same column.
+# ---------------------------------------------------------------------------
+@register_solver
+class ColumnFillDownSolver(BaseSolver):
+    name = "ColumnFillDownSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for c in range(C):
+            last = 0
+            for r in range(R):
+                if out[r][c] != 0:
+                    last = out[r][c]
+                elif last != 0:
+                    out[r][c] = last
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColorCountToPatternSolver — task 6e02f1e3
+# Rule: count unique non-zero colors (n) in the input, then output:
+#   n==1 → row 0 filled with 5, rest 0
+#   n==2 → main diagonal = 5, rest 0
+#   n==3 → anti-diagonal = 5, rest 0
+# ---------------------------------------------------------------------------
+@register_solver
+class ColorCountToPatternSolver(BaseSolver):
+    name = "ColorCountToPatternSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        n = len({cell for row in grid for cell in row if cell != 0})
+        out = [[0] * C for _ in range(R)]
+        if n == 1:
+            for c in range(C):
+                out[0][c] = 5
+        elif n == 2:
+            for i in range(min(R, C)):
+                out[i][i] = 5
+        elif n == 3:
+            for i in range(min(R, C)):
+                out[i][C - 1 - i] = 5
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CountTo2sFillSolver(BaseSolver):
+    """
+    Task 794b24be: count 1s in input (N), fill N cells with 2
+    using fixed order: (0,0),(0,1),(0,2),(1,1),(1,0),(1,2),(2,1),(2,0),(2,2)
+    """
+    name = "CountTo2sFillSolver"
+    FILL_ORDER = [(0,0),(0,1),(0,2),(1,1),(1,0),(1,2),(2,1),(2,0),(2,2)]
+
+    def _transform(self, grid):
+        n = sum(row.count(1) for row in grid)
+        R, C = len(grid), len(grid[0])
+        out = [[0]*C for _ in range(R)]
+        for idx, (r, c) in enumerate(self.FILL_ORDER):
+            if idx < n and r < R and c < C:
+                out[r][c] = 2
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class UShapeOpeningMarkerSolver(BaseSolver):
+    """
+    Task 54d82841: find 2-row U-shape pattern in any row-pair:
+      row[r][c..c+2] = [A, A, A]
+      row[r+1][c..c+2] = [A, 0, A]  (A != 0)
+    Place color 4 in the LAST ROW at the opening column (c+1).
+    Multiple U-shapes -> multiple 4s at their respective opening columns.
+    """
+    name = "UShapeOpeningMarkerSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        last_r = R - 1
+        for r in range(R - 1):
+            for c in range(C - 2):
+                A = grid[r][c]
+                if A == 0:
+                    continue
+                # top bar: A A A
+                if grid[r][c+1] == A and grid[r][c+2] == A:
+                    # bottom: A 0 A
+                    if grid[r+1][c] == A and grid[r+1][c+1] == 0 and grid[r+1][c+2] == A:
+                        out[last_r][c+1] = 4
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class DiamondOutwardPairSolver(BaseSolver):
+    """
+    Task 9f5f939b: mark any non-1 cell at (r,c) with 4 if:
+      dist-2 cardinal neighbors all == 1: (r±2,c), (r,c±2)
+      dist-3 cardinal neighbors all == 1: (r±3,c), (r,c±3)
+    Bounds: r in [3, R-4], c in [3, C-4]
+    """
+    name = "DiamondOutwardPairSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for r in range(3, R - 3):
+            for c in range(3, C - 3):
+                if grid[r][c] == 1:
+                    continue
+                # dist-2 diamond
+                if not (grid[r-2][c] == 1 and grid[r+2][c] == 1 and
+                        grid[r][c-2] == 1 and grid[r][c+2] == 1):
+                    continue
+                # dist-3 outward pairs
+                if not (grid[r-3][c] == 1 and grid[r+3][c] == 1 and
+                        grid[r][c-3] == 1 and grid[r][c+3] == 1):
+                    continue
+                out[r][c] = 4
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class PyramidShadowSolver(BaseSolver):
+    """
+    Task b8cdaf2b: in the last non-zero row (bottom_r):
+      identify border color B (leftmost == rightmost non-zero color)
+      and fill color A (other non-zero color, contiguous in middle).
+    For each B cell at col c:
+      dist = min(|c - fill_left|, |c - fill_right|)
+      place A at (bottom_r - dist - 1, c)
+    """
+    name = "PyramidShadowSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        # find last non-zero row
+        bottom_r = None
+        for r in range(R - 1, -1, -1):
+            if any(v != 0 for v in grid[r]):
+                bottom_r = r
+                break
+        if bottom_r is None:
+            return out
+        row = grid[bottom_r]
+        # find leftmost and rightmost non-zero
+        nz = [c for c in range(C) if row[c] != 0]
+        if len(nz) < 2:
+            return out
+        left_col, right_col = nz[0], nz[-1]
+        B = row[left_col]
+        if row[right_col] != B:
+            return out  # border must be same color
+        # fill color A: non-zero, non-B cells between left and right
+        fill_cols = [c for c in nz if row[c] != B]
+        if not fill_cols:
+            return out
+        A = row[fill_cols[0]]
+        fill_left = fill_cols[0]
+        fill_right = fill_cols[-1]
+        # B cells: leftmost + rightmost
+        b_cols = [c for c in nz if row[c] == B]
+        for c in b_cols:
+            dist = min(abs(c - fill_left), abs(c - fill_right))
+            target_r = bottom_r - dist - 1
+            if 0 <= target_r < R:
+                out[target_r][c] = A
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
