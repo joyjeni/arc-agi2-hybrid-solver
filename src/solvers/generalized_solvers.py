@@ -3321,3 +3321,121 @@ class NestedFrameTopoSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+# ---------------------------------------------------------------------------
+# DiagonalExtendEightSolver — targets task 22233c11
+#
+# Rule:
+#   Color-3 cells form 4-connected components that appear in pairs arranged
+#   diagonally (TL+BR, "main diagonal") or anti-diagonally (TR+BL).
+#   Color 8 is placed at two "extension" block positions derived from each pair:
+#
+#   Sort all components by (min_row, min_col); pair consecutively (0+1),(2+3)...
+#   G1 = first in pair (lower min_row).
+#   h = G1 height = max_row-min_row+1,  w = G1 width = max_col-min_col+1
+#
+#   Main diagonal  (G1.min_col < G2.min_col):
+#     8A block rows = [G1_min_r - h .. G1_max_r - h], cols = [G2_min_c + w .. G2_max_c + w]
+#     8B block rows = [G2_min_r + h .. G2_max_r + h], cols = [G1_min_c - w .. G1_max_c - w]
+#
+#   Anti-diagonal  (G1.min_col >= G2.min_col):
+#     8A block rows = [G1_min_r - h .. G1_max_r - h], cols = [G2_min_c - w .. G2_max_c - w]
+#     8B block rows = [G2_min_r + h .. G2_max_r + h], cols = [G1_min_c + w .. G1_max_c + w]
+#
+#   All out-of-bounds cells are simply skipped (clipped).
+# ---------------------------------------------------------------------------
+@register_solver
+class DiagonalExtendEightSolver(BaseSolver):
+    """Color-3 group pairs → extend diagonally with color 8 blocks (task 22233c11)."""
+
+    name = "DiagonalExtendEightSolver"
+
+    # ------------------------------------------------------------------ helpers
+    def _find_components(self, grid: Grid) -> list:
+        """Return list of 4-conn components of color 3 (each a list of (r,c))."""
+        R, C = len(grid), len(grid[0])
+        visited = [[False] * C for _ in range(R)]
+        comps = []
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 3 and not visited[r][c]:
+                    comp, queue = [], [(r, c)]
+                    visited[r][c] = True
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                            nr, nc = cr + dr, cc + dc
+                            if 0 <= nr < R and 0 <= nc < C and not visited[nr][nc] and grid[nr][nc] == 3:
+                                visited[nr][nc] = True
+                                queue.append((nr, nc))
+                    comps.append(comp)
+        return comps
+
+    def _place_block(self, out: Grid, r0: int, r1: int, c0: int, c1: int) -> None:
+        R, C = len(out), len(out[0])
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                if 0 <= r < R and 0 <= c < C:
+                    out[r][c] = 8
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        comps = self._find_components(inp)
+        if len(comps) == 0 or len(comps) % 2 != 0:
+            return None
+
+        comps.sort(key=lambda comp: (min(r for r, c in comp), min(c for r, c in comp)))
+
+        out = [row[:] for row in inp]
+
+        for i in range(0, len(comps), 2):
+            G1, G2 = comps[i], comps[i + 1]
+
+            g1r = [r for r, c in G1];  g1c = [c for r, c in G1]
+            g2r = [r for r, c in G2];  g2c = [c for r, c in G2]
+
+            g1_min_r, g1_max_r = min(g1r), max(g1r)
+            g1_min_c, g1_max_c = min(g1c), max(g1c)
+            g2_min_r, g2_max_r = min(g2r), max(g2r)
+            g2_min_c, g2_max_c = min(g2c), max(g2c)
+
+            h = g1_max_r - g1_min_r + 1
+            w = g1_max_c - g1_min_c + 1
+
+            if g1_min_c < g2_min_c:
+                # Main diagonal: G1=TL, G2=BR
+                # 8A: G1-shifted up, G2-shifted right
+                self._place_block(out, g1_min_r - h, g1_max_r - h, g2_min_c + w, g2_max_c + w)
+                # 8B: G2-shifted down, G1-shifted left
+                self._place_block(out, g2_min_r + h, g2_max_r + h, g1_min_c - w, g1_max_c - w)
+            else:
+                # Anti-diagonal: G1=TR, G2=BL
+                # 8A: G1-shifted up, G2-shifted left
+                self._place_block(out, g1_min_r - h, g1_max_r - h, g2_min_c - w, g2_max_c - w)
+                # 8B: G2-shifted down, G1-shifted right
+                self._place_block(out, g2_min_r + h, g2_max_r + h, g1_min_c + w, g1_max_c + w)
+
+        return out
+
+    # ------------------------------------------------------------------ interface
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            if not any(inp[r][c] == 3 for r in range(len(inp)) for c in range(len(inp[0]))):
+                return False
+            if not any(out[r][c] == 8 for r in range(len(out)) for c in range(len(out[0]))):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        # Validate on all training pairs first
+        for p in ctx.train_pairs:
+            pred = self._predict(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
