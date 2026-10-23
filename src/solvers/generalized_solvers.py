@@ -3538,3 +3538,91 @@ class EightMarkerExtractSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# SixPointerRotateSolver — targets task 1a244afd
+# Rule: Background=8. Scatter of color-1 "pivots" and color-6 "pointers".
+#       Each 6 aligns with the nearest 1 in the same row or column.
+#       Direction from 6→1, rotated 90° CW, gives the placement axis.
+#       7 is placed at distance d (= |6–1| along the alignment axis) from 1
+#       in the rotated direction. All 6s are removed (set to 8).
+#       Unpaired 6s (no aligned 1) are simply removed.
+# ---------------------------------------------------------------------------
+@register_solver
+class SixPointerRotateSolver(BaseSolver):
+    name = "SixPointerRotateSolver"
+
+    @staticmethod
+    def _rotate_cw(dr, dc):
+        return dc, -dr
+
+    def _predict(self, grid):
+        rows, cols = len(grid), len(grid[0])
+        import copy
+        out = copy.deepcopy(grid)
+
+        ones  = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 1]
+        sixes = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 6]
+
+        # 1-centric pairing: for each 1, find the best aligned 6.
+        # Tiebreak: column-aligned before row-aligned, then shorter distance,
+        # then smaller (row, col) index.  This prevents a row-aligned 6 from
+        # stealing a 1 that a column-aligned 6 was pointing at.
+        for r1, c1 in ones:
+            aligned = [
+                (r6, c6) for r6, c6 in sixes
+                if r6 == r1 or c6 == c1
+            ]
+            if not aligned:
+                continue
+
+            def six_key(rc):
+                r6, c6 = rc
+                dist = abs(r6 - r1) + abs(c6 - c1)
+                col_prio = 0 if c6 == c1 else 1   # column-aligned preferred
+                return (dist, col_prio, r6, c6)
+
+            r6, c6 = min(aligned, key=six_key)
+
+            if r6 == r1:   # same row
+                dist = abs(c6 - c1)
+                dr, dc = 0, (1 if c1 > c6 else -1)
+            else:           # same col
+                dist = abs(r6 - r1)
+                dr, dc = (1 if r1 > r6 else -1), 0
+
+            rdr, rdc = self._rotate_cw(dr, dc)
+            r7 = r1 + dist * rdr
+            c7 = c1 + dist * rdc
+
+            if 0 <= r7 < rows and 0 <= c7 < cols:
+                out[r7][c7] = 7
+
+        # Remove all 6s (background)
+        for r6, c6 in sixes:
+            out[r6][c6] = 8
+
+        return out
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            rows, cols = len(inp), len(inp[0])
+            has_six = any(inp[r][c] == 6 for r in range(rows) for c in range(cols))
+            has_one = any(inp[r][c] == 1 for r in range(rows) for c in range(cols))
+            if not has_six or not has_one:
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        for p in ctx.train_pairs:
+            pred = self._predict(p["input"])
+            if pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
