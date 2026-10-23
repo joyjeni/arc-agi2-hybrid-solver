@@ -3129,3 +3129,101 @@ class TipCountHalfSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# LegendFrameNoiseSolver
+# Tasks: ff2825db
+# 10×10 grid; row-0 = legend [1,1,2,2,3,3,4,4,5,5]; rows 1-9 have outer
+# rectangular frame (frame_color); interior (rows 2-8, cols 1-8) has scattered
+# noise cells of ≥1 non-bg non-frame color.
+# Rule:
+#   1. Dominant noise color = noise color with most cells.
+#   2. Output row 0: legend preserved.
+#   3. Output outer frame → dominant color.
+#   4. Output inner rectangular FRAME drawn at bounding-box of dominant noise cells.
+#   5. All other interior cells = 0.
+# ---------------------------------------------------------------------------
+@register_solver
+class LegendFrameNoiseSolver(BaseSolver):
+    """Legend row + outer frame + interior noise → replace frame and draw inner bbox frame."""
+
+    name = "LegendFrameNoiseSolver"
+
+    def _is_legend_row(self, row: list) -> bool:
+        return row == [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+
+    def _check_grid(self, inp: Grid) -> bool:
+        if len(inp) != 10 or any(len(r) != 10 for r in inp):
+            return False
+        if not self._is_legend_row(inp[0]):
+            return False
+        fc = inp[1][0]
+        if fc == 0:
+            return False
+        # Row 1 all fc
+        if any(v != fc for v in inp[1]):
+            return False
+        # Row 9 all fc
+        if any(v != fc for v in inp[9]):
+            return False
+        # Col 0 rows 1-9 all fc
+        if any(inp[r][0] != fc for r in range(1, 10)):
+            return False
+        # Col 9 rows 1-9 all fc
+        if any(inp[r][9] != fc for r in range(1, 10)):
+            return False
+        return True
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        if not self._check_grid(inp):
+            return None
+        fc = inp[1][0]
+        # Collect noise cells in interior
+        noise: dict = {}
+        for r in range(2, 9):
+            for c in range(1, 9):
+                v = inp[r][c]
+                if v != 0 and v != fc:
+                    noise.setdefault(v, []).append((r, c))
+        if not noise:
+            return None
+        dom = max(noise, key=lambda k: len(noise[k]))
+        cells = noise[dom]
+        min_r = min(p[0] for p in cells)
+        max_r = max(p[0] for p in cells)
+        min_c = min(p[1] for p in cells)
+        max_c = max(p[1] for p in cells)
+
+        out = [[0] * 10 for _ in range(10)]
+        # Legend row preserved
+        out[0] = list(inp[0])
+        # Outer frame → dom
+        for c in range(10):
+            out[1][c] = dom
+            out[9][c] = dom
+        for r in range(1, 10):
+            out[r][0] = dom
+            out[r][9] = dom
+        # Inner rectangular border at bbox
+        for c in range(min_c, max_c + 1):
+            out[min_r][c] = dom
+            out[max_r][c] = dom
+        for r in range(min_r, max_r + 1):
+            out[r][min_c] = dom
+            out[r][max_c] = dom
+        return out
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        return all(self._check_grid(p["input"]) for p in ctx.train_pairs)
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        for p in ctx.train_pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
