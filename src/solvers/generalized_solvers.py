@@ -4484,3 +4484,107 @@ class MidpointPlusSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
             results.append(out)
         return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class DiagonalAlternateSolver(BaseSolver):
+    """Task a5f85a15: non-zero cells lie on diagonals (r-c = constant).
+    Within each diagonal (sorted by row), even-indexed cells keep their color;
+    odd-indexed cells change to 4."""
+    name = "DiagonalAlternateSolver"
+
+    def _transform(self, grid):
+        import copy
+        from collections import defaultdict
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        diags = defaultdict(list)
+        for r in range(rows):
+            for c in range(cols):
+                if g[r][c] != 0:
+                    diags[r - c].append((r, c))
+        for cells in diags.values():
+            cells.sort()
+            for idx, (r, c) in enumerate(cells):
+                if idx % 2 == 1:
+                    g[r][c] = 4
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class LPocketFilterSolver(BaseSolver):
+    """Task 1e81d6f9: color-5 cells form an L-shape, defining a 'pocket' corner.
+    One non-zero, non-5 color has some cells inside the pocket and some outside.
+    Rule: erase all cells of that target color that lie outside the pocket."""
+    name = "LPocketFilterSolver"
+
+    def _find_pocket(self, grid):
+        from collections import defaultdict
+        rows, cols = len(grid), len(grid[0])
+        fives = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 5]
+        if not fives:
+            return None, None
+        by_row = defaultdict(list)
+        by_col = defaultdict(list)
+        for r, c in fives:
+            by_row[r].append(c)
+            by_col[c].append(r)
+        if not by_row or not by_col:
+            return None, None
+        h_row = max(by_row, key=lambda r: len(by_row[r]))
+        v_col = max(by_col, key=lambda c: len(by_col[c]))
+        return h_row, v_col  # pocket is rows < h_row, cols < v_col
+
+    def _transform(self, grid):
+        import copy
+        from collections import defaultdict
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        pr, pc = self._find_pocket(grid)
+        if pr is None or pc is None:
+            return None
+        color_cells = defaultdict(list)
+        for r in range(rows):
+            for c in range(cols):
+                v = grid[r][c]
+                if v not in (0, 5):
+                    color_cells[v].append((r, c))
+        target_color = None
+        for color, cells in color_cells.items():
+            inside  = [(r, c) for r, c in cells if r < pr and c < pc]
+            outside = [(r, c) for r, c in cells if not (r < pr and c < pc)]
+            if len(inside) >= 1 and len(outside) >= 1:
+                target_color = color
+                break
+        if target_color is None:
+            return None
+        for r, c in color_cells[target_color]:
+            if not (r < pr and c < pc):
+                g[r][c] = 0
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
