@@ -3702,3 +3702,123 @@ class RotationSymmetryFillSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ArmCollapseOnFiveSolver — task 182e5d0f
+# Colors {0,3,5,7}; background=7.
+# Corner: a 3-cell with exactly two 0-neighbors on OPPOSITE orthogonal sides.
+# Arm: BFS/path of connected 3-cells starting from corner's one 3-neighbor.
+# Tip: last cell of arm.
+# Trigger: if a 5 is 4-adjacent to tip → 5→7, arm[0]→5, arm[1:]→7; corner stays.
+# No trigger: path unchanged. Stray 5s stay.
+# ---------------------------------------------------------------------------
+@register_solver
+class ArmCollapseOnFiveSolver(BaseSolver):
+    name = "ArmCollapseOnFiveSolver"
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            colors = {c for row in inp for c in row}
+            if not colors <= {0, 3, 5, 7}:
+                return False
+            if 3 not in colors or 7 not in colors:
+                return False
+        return True
+
+    def _find_corners(self, grid):
+        R, C = len(grid), len(grid[0])
+        corners = []
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 3:
+                    continue
+                dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+                zero_dirs = []
+                for dr, dc in dirs:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0:
+                        zero_dirs.append((dr, dc))
+                if len(zero_dirs) == 2:
+                    (dr1,dc1),(dr2,dc2) = zero_dirs
+                    if dr1+dr2 == 0 and dc1+dc2 == 0:  # opposite
+                        corners.append((r, c))
+        return corners
+
+    def _trace_arm(self, grid, corner):
+        R, C = len(grid), len(grid[0])
+        cr, cc = corner
+        dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+        # find 3-neighbor of corner (not a 0-direction, not background)
+        zero_dirs = set()
+        for dr, dc in dirs:
+            nr, nc = cr+dr, cc+dc
+            if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0:
+                zero_dirs.add((dr, dc))
+        arm = []
+        visited = {corner}
+        # start from corner's 3-neighbors that are NOT in a 0-direction
+        starts = []
+        for dr, dc in dirs:
+            nr, nc = cr+dr, cc+dc
+            if (dr, dc) in zero_dirs:
+                continue
+            if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 3:
+                starts.append((nr, nc))
+        if not starts:
+            return arm
+        cur = starts[0]
+        visited.add(cur)
+        arm.append(cur)
+        while True:
+            found_next = False
+            for dr, dc in dirs:
+                nr, nc = cur[0]+dr, cur[1]+dc
+                if (nr, nc) not in visited and 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 3:
+                    visited.add((nr, nc))
+                    arm.append((nr, nc))
+                    cur = (nr, nc)
+                    found_next = True
+                    break
+            if not found_next:
+                break
+        return arm
+
+    def _transform(self, grid):
+        import copy
+        R, C = len(grid), len(grid[0])
+        out = copy.deepcopy(grid)
+        corners = self._find_corners(grid)
+        dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+        for corner in corners:
+            arm = self._trace_arm(grid, corner)
+            if not arm:
+                continue
+            tip = arm[-1]
+            # check for 5 adjacent to tip
+            five_pos = None
+            for dr, dc in dirs:
+                nr, nc = tip[0]+dr, tip[1]+dc
+                if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 5:
+                    five_pos = (nr, nc)
+                    break
+            if five_pos is not None:
+                out[five_pos[0]][five_pos[1]] = 7
+                out[arm[0][0]][arm[0][1]] = 5
+                for cell in arm[1:]:
+                    out[cell[0]][cell[1]] = 7
+                # corner stays as 3
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        # Validate on training pairs
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = []
+        for test_inp in ctx.test_inputs:
+            pred = self._transform(test_inp)
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
