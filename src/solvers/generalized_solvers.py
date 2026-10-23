@@ -3626,3 +3626,79 @@ class SixPointerRotateSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class RotationSymmetryFillSolver(BaseSolver):
+    """
+    Task 1b60fb0c: 180-degree rotation fill.
+    Input colors [0,1]; output adds color 2 to cells that are the
+    180-rotation of a 1-cell about the shape's centre of symmetry.
+    Centre is detected per-grid by choosing whichever natural candidate
+    ((R-1)/2, (C-1)/2) or (R/2, C/2) maximises self-overlap of the 1-shape.
+    """
+    name = "RotationSymmetryFillSolver"
+
+    @staticmethod
+    def _score_center(grid, cx, cy):
+        """Count 1-cells whose 180-rotation about (cx,cy) is also a 1."""
+        R, C = len(grid), len(grid[0])
+        score = total = 0
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 1:
+                    total += 1
+                    r2 = int(round(2 * cx - r))
+                    c2 = int(round(2 * cy - c))
+                    if 0 <= r2 < R and 0 <= c2 < C and grid[r2][c2] == 1:
+                        score += 1
+        return score, total
+
+    @staticmethod
+    def _apply_rotation(grid, cx, cy):
+        R, C = len(grid), len(grid[0])
+        result = [row[:] for row in grid]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 0:
+                    r2 = int(round(2 * cx - r))
+                    c2 = int(round(2 * cy - c))
+                    if 0 <= r2 < R and 0 <= c2 < C and grid[r2][c2] == 1:
+                        result[r][c] = 2
+        return result
+
+    def _predict(self, grid):
+        R, C = len(grid), len(grid[0])
+        cA = ((R - 1) / 2.0, (C - 1) / 2.0)
+        cB = (R / 2.0, C / 2.0)
+        sA, tot = self._score_center(grid, *cA)
+        sB, _   = self._score_center(grid, *cB)
+        if tot == 0:
+            return None
+        cx, cy = cA if sA >= sB else cB
+        return self._apply_rotation(grid, cx, cy)
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            inp_vals = {inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))}
+            out_vals = {out[r][c] for r in range(len(out)) for c in range(len(out[0]))}
+            if not inp_vals.issubset({0, 1}):
+                return False
+            if not out_vals.issubset({0, 1, 2}):
+                return False
+            if 2 not in out_vals or 1 not in inp_vals:
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        for pair in ctx.train_pairs:
+            pred = self._predict(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
