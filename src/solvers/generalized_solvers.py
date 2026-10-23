@@ -4588,3 +4588,139 @@ class LPocketFilterSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
             results.append(out)
         return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class IsolatedTipDiagonalSolver(BaseSolver):
+    """
+    Task 7ddcd7ec: 0-background, single-color non-zero cells form a connected cluster
+    (typically 2x2) plus isolated tip cells (no edge-adjacent non-zero neighbors).
+    Rule: for each isolated tip, compute direction dr/dc = sign(tip_r - centroid_r),
+    sign(tip_c - centroid_c) (each ±1). Step from tip+step to grid boundary in that
+    direction, coloring each cell with the tip's color.
+    """
+    name = "IsolatedTipDiagonalSolver"
+
+    def _get_cluster_and_tips(self, grid):
+        rows, cols = len(grid), len(grid[0])
+        nz = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] != 0]
+        if not nz:
+            return None, None, None
+        color = grid[nz[0][0]][nz[0][1]]
+        if any(grid[r][c] != color for r, c in nz):
+            return None, None, None  # multiple colors
+        # classify: isolated tip = no edge-adjacent non-zero neighbor
+        nz_set = set(nz)
+        tips = []
+        cluster = []
+        for r, c in nz:
+            neighbors = [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
+            if any(n in nz_set for n in neighbors):
+                cluster.append((r, c))
+            else:
+                tips.append((r, c))
+        if not cluster or not tips:
+            return None, None, None
+        return cluster, tips, color
+
+    def _transform(self, grid):
+        cluster, tips, color = self._get_cluster_and_tips(grid)
+        if cluster is None:
+            return None
+        rows, cols = len(grid), len(grid[0])
+        cr = sum(r for r, c in cluster) / len(cluster)
+        cc = sum(c for r, c in cluster) / len(cluster)
+        out = [row[:] for row in grid]
+        for tr, tc in tips:
+            dr = 1 if tr >= cr else -1
+            dc = 1 if tc >= cc else -1
+            r, c = tr + dr, tc + dc
+            while 0 <= r < rows and 0 <= c < cols:
+                out[r][c] = color
+                r += dr
+                c += dc
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CompleteLToSquareSolver(BaseSolver):
+    """
+    Task 3aa6fb7a: 0-background with 8-cells forming L-shaped groups of size 3
+    whose bounding box is 2x2 (one corner missing). Rule: find each such connected
+    component and place color 1 at the missing 4th corner of the bounding box.
+    """
+    name = "CompleteLToSquareSolver"
+
+    def _find_components(self, grid, color):
+        rows, cols = len(grid), len(grid[0])
+        visited = set()
+        components = []
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == color and (r, c) not in visited:
+                    # BFS
+                    comp = []
+                    queue = [(r, c)]
+                    visited.add((r, c))
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = cr+dr, cc+dc
+                            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == color and (nr,nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+                    components.append(comp)
+        return components
+
+    def _transform(self, grid):
+        components = self._find_components(grid, 8)
+        if not components:
+            return None
+        out = [row[:] for row in grid]
+        placed = False
+        for comp in components:
+            if len(comp) != 3:
+                continue
+            min_r = min(r for r, c in comp)
+            max_r = max(r for r, c in comp)
+            min_c = min(c for r, c in comp)
+            max_c = max(c for r, c in comp)
+            if max_r - min_r != 1 or max_c - min_c != 1:
+                continue  # not 2x2 bounding box
+            # find the missing corner
+            corners = {(min_r, min_c), (min_r, max_c), (max_r, min_c), (max_r, max_c)}
+            comp_set = set(comp)
+            missing = corners - comp_set
+            if len(missing) != 1:
+                continue
+            mr, mc = missing.pop()
+            out[mr][mc] = 1
+            placed = True
+        return out if placed else None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
