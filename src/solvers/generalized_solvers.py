@@ -4332,3 +4332,155 @@ class PyramidShadowSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
         results = [self._transform(t) for t in ctx.test_inputs]
         return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class LineExtensionToBorderSolver(BaseSolver):
+    """Task 9f8de559: 7-interior grid with colored border. Inside: line of 6s + a 2 at one end.
+    Rule: extend the 6-line past the 2 in the same direction until hitting a non-7 border cell;
+    change that border cell to 7."""
+    name = "LineExtensionToBorderSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        # find all 6-cells and the 2-cell
+        sixes = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 6]
+        twos  = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 2]
+        if not sixes or not twos:
+            return None
+        two_r, two_c = twos[0]
+        # sort sixes to find direction
+        sixes_sorted = sorted(sixes)
+        if len(sixes_sorted) < 2:
+            return None
+        # compute step from first to last six
+        r0, c0 = sixes_sorted[0]
+        r1, c1 = sixes_sorted[-1]
+        dr = 0 if r1 == r0 else (1 if r1 > r0 else -1)
+        dc = 0 if c1 == c0 else (1 if c1 > c0 else -1)
+        # determine if 2 is past the last or before the first
+        last_r, last_c = sixes_sorted[-1]
+        first_r, first_c = sixes_sorted[0]
+        if (two_r, two_c) == (last_r + dr, last_c + dc):
+            step_r, step_c = dr, dc
+            start_r, start_c = two_r + step_r, two_c + step_c
+        elif (two_r, two_c) == (first_r - dr, first_c - dc):
+            step_r, step_c = -dr, -dc
+            start_r, start_c = two_r + step_r, two_c + step_c
+        else:
+            return None
+        # walk in step direction until hitting non-7 cell
+        r, c = start_r, start_c
+        while 0 <= r < rows and 0 <= c < cols:
+            if g[r][c] != 7:
+                g[r][c] = 7
+                return g
+            r += step_r
+            c += step_c
+        return None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class PushEightThroughBlockSolver(BaseSolver):
+    """Task e4941b18: 7-background grid with a rectangular block of 5s, one isolated 2 and one isolated 8
+    in the row directly above the 5-block's top edge.
+    Rule: erase original 2 (→7), move 2 to where 8 was, move 8 to bottom of 5-block on the
+    opposite side: if 2 was LEFT of 8 → new 8 at (bottom_row, right_col+1);
+    if 2 was RIGHT of 8 → new 8 at (bottom_row, left_col-1)."""
+    name = "PushEightThroughBlockSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        # find the 5-block bounding box
+        five_cells = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 5]
+        if not five_cells:
+            return None
+        top_row  = min(r for r, c in five_cells)
+        bot_row  = max(r for r, c in five_cells)
+        left_col = min(c for r, c in five_cells)
+        right_col= max(c for r, c in five_cells)
+        # find 2 and 8 in the row just above the block
+        check_row = top_row - 1
+        two_cells = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 2]
+        eight_cells= [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 8]
+        if not two_cells or not eight_cells:
+            return None
+        two_r, two_c = two_cells[0]
+        eight_r, eight_c = eight_cells[0]
+        # determine side
+        if two_c < eight_c:
+            new_eight_c = right_col + 1
+        else:
+            new_eight_c = left_col - 1
+        if not (0 <= new_eight_c < cols):
+            return None
+        # apply transforms
+        g[two_r][two_c] = 7       # erase original 2
+        g[eight_r][eight_c] = 2   # 2 jumps to 8's position
+        g[bot_row][new_eight_c] = 8  # new 8 at bottom of block
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MidpointPlusSolver(BaseSolver):
+    """Task e9614598: grid with exactly two 1-cells on zero background.
+    Rule: compute integer midpoint; draw a plus (cross) of color 3 at midpoint (center + 4 cardinal neighbors)."""
+    name = "MidpointPlusSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        ones = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 1]
+        if len(ones) != 2:
+            return None
+        (r1, c1), (r2, c2) = ones
+        mr, mc = (r1 + r2) // 2, (c1 + c2) // 2
+        for dr, dc in [(0,0),(1,0),(-1,0),(0,1),(0,-1)]:
+            nr, nc = mr + dr, mc + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                g[nr][nc] = 3
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
