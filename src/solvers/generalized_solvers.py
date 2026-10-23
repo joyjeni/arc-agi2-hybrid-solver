@@ -3227,3 +3227,97 @@ class LegendFrameNoiseSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# NestedFrameTopoSolver
+# Tasks: 68bc2e87
+# 18×19 grids with overlapping rectangular frames (bg=8).
+# Rule: at each cell where two frame-boundary paths cross, the color shown
+# is the "later" frame (drawn on top). Build a directed graph from these
+# intersection wins and topological-sort to get the output frame order.
+# Output: Nx1 list of frame colors in topo order (outer→inner).
+# ---------------------------------------------------------------------------
+@register_solver
+class NestedFrameTopoSolver(BaseSolver):
+    """Overlapping rect frames: topological sort by boundary intersection wins → Nx1 output."""
+
+    name = "NestedFrameTopoSolver"
+
+    def _get_bbox(self, grid, color):
+        rows, cols = [], []
+        for r, row in enumerate(grid):
+            for c, v in enumerate(row):
+                if v == color:
+                    rows.append(r); cols.append(c)
+        if not rows:
+            return None
+        return min(rows), max(rows), min(cols), max(cols)
+
+    def _on_boundary(self, r, c, bbox) -> bool:
+        r0, r1, c0, c1 = bbox
+        return ((r == r0 or r == r1) and c0 <= c <= c1) or \
+               ((c == c0 or c == c1) and r0 <= r <= r1)
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        bg = 8  # fixed bg for this task family
+        colors = sorted(set(v for row in inp for v in row) - {bg})
+        if len(colors) < 2:
+            return None
+        bboxes = {c: self._get_bbox(inp, c) for c in colors}
+        # Build directed edges: loser → winner at each boundary intersection
+        adj: dict = {c: [] for c in colors}
+        in_deg: dict = {c: 0 for c in colors}
+        seen_pairs: set = set()
+        for i, ci in enumerate(colors):
+            for cj in colors[i + 1:]:
+                if (ci, cj) in seen_pairs:
+                    continue
+                bi, bj = bboxes[ci], bboxes[cj]
+                if bi is None or bj is None:
+                    continue
+                for r in range(len(inp)):
+                    for c in range(len(inp[0])):
+                        if self._on_boundary(r, c, bi) and self._on_boundary(r, c, bj):
+                            winner = inp[r][c]
+                            if winner not in (ci, cj):
+                                continue
+                            loser = cj if winner == ci else ci
+                            pair_key = (loser, winner)
+                            if pair_key not in seen_pairs:
+                                seen_pairs.add(pair_key)
+                                adj[loser].append(winner)
+                                in_deg[winner] = in_deg.get(winner, 0) + 1
+                            break  # one intersection per pair is enough
+        # Topological sort (Kahn's algorithm)
+        from collections import deque
+        q: deque = deque(c for c in colors if in_deg.get(c, 0) == 0)
+        order: list = []
+        while q:
+            node = q.popleft()
+            order.append(node)
+            for nb in adj[node]:
+                in_deg[nb] -= 1
+                if in_deg[nb] == 0:
+                    q.append(nb)
+        if len(order) != len(colors):
+            return None  # cycle detected
+        return [[c] for c in order]
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        # All outputs must be Nx1 and all inputs same size
+        for p in ctx.train_pairs:
+            if any(len(row) != 1 for row in p["output"]):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        for p in ctx.train_pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
