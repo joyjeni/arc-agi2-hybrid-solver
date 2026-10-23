@@ -5479,3 +5479,485 @@ class ColorComplementSolver(BaseSolver):
             preds.append(_mk(g, self.name))
         return _res(ctx.task_id, preds)
 
+
+
+# ── p100–p108 NEW SOLVERS ──────────────────────────────────────────────────
+
+
+def _col_period(col: list) -> int:
+    """Find the minimum period P of a list such that col[i] == col[i % P] for all i."""
+    n = len(col)
+    for p in range(1, n + 1):
+        if all(col[i] == col[i % p] for i in range(n)):
+            return p
+    return n
+
+
+@register_solver
+class DiagonalAntidiagTileSolver(BaseSolver):
+    """p100 — task 05269061: fill grid via diagonal-index color sequence."""
+
+    @property
+    def name(self) -> str:
+        return "DiagonalAntidiagTileSolver"
+
+    @property
+    def priority(self) -> int:
+        return 100
+
+    def _build_seq(self, inp):
+        colors_ord = []
+        seen: set = set()
+        for row in inp:
+            for v in row:
+                if v != 0 and v not in seen:
+                    colors_ord.append(v)
+                    seen.add(v)
+        k = len(colors_ord)
+        if k == 0:
+            return None, 0
+        seq: dict = {}
+        for r, row in enumerate(inp):
+            for c, v in enumerate(row):
+                if v != 0:
+                    idx = (r + c) % k
+                    if idx in seq and seq[idx] != v:
+                        return None, k
+                    seq[idx] = v
+        if len(seq) != k:
+            return None, k
+        return seq, k
+
+    def _apply(self, inp):
+        seq, k = self._build_seq(inp)
+        if seq is None:
+            return None
+        H, W = len(inp), len(inp[0])
+        return [[seq[(r + c) % k] for c in range(W)] for r in range(H)]
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class KeyShapeRecolorSolver(BaseSolver):
+    """p101 — task 009d5c81: find 3×3 key (1-cells), map to target color, recolor 8→target."""
+
+    @property
+    def name(self) -> str:
+        return "KeyShapeRecolorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 101
+
+    def _extract_key(self, inp):
+        H, W = len(inp), len(inp[0])
+        ones = [(r, c) for r in range(H) for c in range(W) if inp[r][c] == 1]
+        if not ones:
+            return None
+        min_r = min(r for r, _ in ones)
+        min_c = min(c for _, c in ones)
+        max_r = max(r for r, _ in ones)
+        max_c = max(c for _, c in ones)
+        if max_r - min_r != 2 or max_c - min_c != 2:
+            return None
+        return tuple(
+            tuple(inp[min_r + dr][min_c + dc] for dc in range(3))
+            for dr in range(3)
+        )
+
+    def solve(self, ctx: TaskContext):
+        key_map: dict = {}
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return None
+            key = self._extract_key(inp)
+            if key is None:
+                return None
+            H, W = len(inp), len(inp[0])
+            target = None
+            for r in range(H):
+                for c in range(W):
+                    if inp[r][c] == 8:
+                        t = out[r][c]
+                        if t != 0:
+                            if target is not None and target != t:
+                                return None
+                            target = t
+            if target is None:
+                return None
+            key_map[key] = target
+
+        preds = []
+        for inp in ctx.test_inputs:
+            key = self._extract_key(inp)
+            if key not in key_map:
+                return None
+            target = key_map[key]
+            H, W = len(inp), len(inp[0])
+            out = []
+            for r in range(H):
+                row = []
+                for c in range(W):
+                    v = inp[r][c]
+                    if v == 8:
+                        row.append(target)
+                    elif v == 1:
+                        row.append(0)
+                    else:
+                        row.append(v)
+                out.append(row)
+            preds.append(_mk(out, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class StaircaseBlockPlaceSolver(BaseSolver):
+    """p102 — task 03560426: sort solid-color blocks by min_col, place diagonally."""
+
+    @property
+    def name(self) -> str:
+        return "StaircaseBlockPlaceSolver"
+
+    @property
+    def priority(self) -> int:
+        return 102
+
+    def _find_blocks(self, inp):
+        H, W = len(inp), len(inp[0])
+        visited = [[False] * W for _ in range(H)]
+        blocks = []
+        for r in range(H):
+            for c in range(W):
+                v = inp[r][c]
+                if v == 0 or visited[r][c]:
+                    continue
+                cells: set = set()
+                stack = [(r, c)]
+                while stack:
+                    nr, nc = stack.pop()
+                    if nr < 0 or nr >= H or nc < 0 or nc >= W:
+                        continue
+                    if visited[nr][nc] or inp[nr][nc] != v:
+                        continue
+                    visited[nr][nc] = True
+                    cells.add((nr, nc))
+                    stack.extend([(nr+1,nc),(nr-1,nc),(nr,nc+1),(nr,nc-1)])
+                min_r = min(rr for rr, _ in cells)
+                max_r = max(rr for rr, _ in cells)
+                min_c = min(cc for _, cc in cells)
+                max_c = max(cc for _, cc in cells)
+                h = max_r - min_r + 1
+                w = max_c - min_c + 1
+                if len(cells) != h * w:
+                    return None
+                blocks.append({"color": v, "h": h, "w": w, "min_col": min_c})
+        return blocks
+
+    def _build_output(self, blocks, H, W):
+        out = [[0] * W for _ in range(H)]
+        sorted_b = sorted(blocks, key=lambda b: b["min_col"])
+        row_off = col_off = 0
+        for i, b in enumerate(sorted_b):
+            h, w, color = b["h"], b["w"], b["color"]
+            for dr in range(h):
+                for dc in range(w):
+                    rr, cc = row_off + dr, col_off + dc
+                    if 0 <= rr < H and 0 <= cc < W:
+                        out[rr][cc] = color
+            if i < len(sorted_b) - 1:
+                row_off += h - 1
+                col_off += w - 1
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            H, W = len(inp), len(inp[0])
+            blocks = self._find_blocks(inp)
+            if blocks is None:
+                return None
+            if self._build_output(blocks, H, W) != [list(r) for r in out]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            H, W = len(inp), len(inp[0])
+            blocks = self._find_blocks(inp)
+            if blocks is None:
+                return None
+            preds.append(_mk(self._build_output(blocks, H, W), self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class ExtendPatternBy3RowsSolver(BaseSolver):
+    """p103 — task 017c7c7b: extend each column by its period; replace 1→2."""
+
+    @property
+    def name(self) -> str:
+        return "ExtendPatternBy3RowsSolver"
+
+    @property
+    def priority(self) -> int:
+        return 103
+
+    def _build_output(self, inp, extra: int):
+        H, W = len(inp), len(inp[0])
+        H_out = H + extra
+        out = []
+        for r in range(H_out):
+            row = []
+            for c in range(W):
+                col_vals = [inp[i][c] for i in range(H)]
+                P = _col_period(col_vals)
+                val = col_vals[r % P]
+                row.append(2 if val != 0 else 0)
+            out.append(row)
+        return out
+
+    def solve(self, ctx: TaskContext):
+        extra = None
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            e = len(out) - len(inp)
+            if e <= 0:
+                return None
+            if extra is None:
+                extra = e
+            elif extra != e:
+                return None
+            if self._build_output(inp, e) != [list(r) for r in out]:
+                return None
+        if extra is None:
+            return None
+        preds = []
+        for inp in ctx.test_inputs:
+            preds.append(_mk(self._build_output(inp, extra), self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class ColorSwapPairsSolver(BaseSolver):
+    """p104 — task 0d3d703e: all rows identical; learn color swap table and apply."""
+
+    @property
+    def name(self) -> str:
+        return "ColorSwapPairsSolver"
+
+    @property
+    def priority(self) -> int:
+        return 104
+
+    def solve(self, ctx: TaskContext):
+        swap: dict = {}
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if len(set(tuple(r) for r in inp)) != 1:
+                return None
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return None
+            for ci, co in zip(inp[0], out[0]):
+                if ci in swap and swap[ci] != co:
+                    return None
+                swap[ci] = co
+        # Require at least 2 distinct input colors to avoid over-firing
+        if len(swap) < 2:
+            return None
+        preds = []
+        for inp in ctx.test_inputs:
+            H, W = len(inp), len(inp[0])
+            out = []
+            for r in range(H):
+                row = []
+                for c in range(W):
+                    v = inp[r][c]
+                    if v not in swap:
+                        return None
+                    row.append(swap[v])
+                out.append(row)
+            preds.append(_mk(out, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class SplitIntersectSolver(BaseSolver):
+    """p105 — task 0520fde7: split at separator col (5s); left AND right both non-zero → 2."""
+
+    @property
+    def name(self) -> str:
+        return "SplitIntersectSolver"
+
+    @property
+    def priority(self) -> int:
+        return 105
+
+    def _apply(self, inp):
+        H = len(inp)
+        W = len(inp[0]) if inp else 0
+        sep_col = next(
+            (c for c in range(W) if all(inp[r][c] == 5 for r in range(H))),
+            None,
+        )
+        if sep_col is None:
+            return None
+        left_w = sep_col
+        right_w = W - sep_col - 1
+        if left_w != right_w:
+            return None
+        out = []
+        for r in range(H):
+            row = [
+                2 if (inp[r][c] != 0 and inp[r][sep_col + 1 + c] != 0) else 0
+                for c in range(left_w)
+            ]
+            out.append(row)
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class FractalizeSolver(BaseSolver):
+    """p106 — task 007bbfb7: fractal tile — non-zero cell → place full input; zero → zeros."""
+
+    @property
+    def name(self) -> str:
+        return "FractalizeSolver"
+
+    @property
+    def priority(self) -> int:
+        return 106
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        out = [[0] * (W * W) for _ in range(H * H)]
+        for gr in range(H):
+            for gc in range(W):
+                if inp[gr][gc] != 0:
+                    for dr in range(H):
+                        for dc in range(W):
+                            out[gr * H + dr][gc * W + dc] = inp[dr][dc]
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class FractalizeComplementSolver(BaseSolver):
+    """p107 — task 0692e18c: fractal tile — non-zero cell → place INVERTED input."""
+
+    @property
+    def name(self) -> str:
+        return "FractalizeComplementSolver"
+
+    @property
+    def priority(self) -> int:
+        return 107
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        nz = set(v for row in inp for v in row if v != 0)
+        if len(nz) != 1:
+            return None
+        color = next(iter(nz))
+        out = [[0] * (W * W) for _ in range(H * H)]
+        for gr in range(H):
+            for gc in range(W):
+                if inp[gr][gc] != 0:
+                    for dr in range(H):
+                        for dc in range(W):
+                            v = inp[dr][dc]
+                            out[gr * H + dr][gc * W + dc] = 0 if v != 0 else color
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class TileRotateSolver(BaseSolver):
+    """p108 — task 00576224: 2×2 → 6×6; rows [r0,r1,rev(r0),rev(r1),r0,r1] each tiled ×3."""
+
+    @property
+    def name(self) -> str:
+        return "TileRotateSolver"
+
+    @property
+    def priority(self) -> int:
+        return 108
+
+    def _apply(self, inp):
+        if len(inp) < 2:
+            return None
+        r0 = list(inp[0])
+        r1 = list(inp[1])
+        rev0 = list(reversed(r0))
+        rev1 = list(reversed(r1))
+        return [row * 3 for row in [r0, r1, rev0, rev1, r0, r1]]
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
