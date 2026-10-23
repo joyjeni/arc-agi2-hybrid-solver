@@ -4724,3 +4724,309 @@ class CompleteLToSquareSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
             results.append(out)
         return _make_result_list(ctx, results, self.name)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NEW SOLVERS (Wave-3): ZoneColFillSolver, TileRepeatExtractSolver,
+#                        CrosshairBoxInteriorSolver, CrosshairDotSolver,
+#                        StripeFenceSolver
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@register_solver
+class ZoneColFillSolver(BaseSolver):
+    """
+    Horizontal bands mode:
+      Every row has exactly one non-zero color (band color); 0-cells mixed in.
+      Consecutive same-color rows form a band.
+      Any column inside that band that contains a 0 → entire column within band
+      is filled with the band color.
+    Vertical strips mode (same logic, transposed):
+      Every column has exactly one non-zero color; consecutive same-color cols
+      form a strip; any row inside the strip that contains a 0 → row filled.
+    Covers: 855e0971 and similar zone-fill tasks.
+    """
+    name = "zone_col_fill_solver"
+
+    def _band_color(self, seq):
+        """Return the single non-zero value in seq, or None if 0 or mixed."""
+        colors = set(v for v in seq if v != 0)
+        return colors.pop() if len(colors) == 1 else None
+
+    def _try_horizontal(self, grid):
+        H, W = len(grid), len(grid[0])
+        row_colors = [self._band_color(grid[r]) for r in range(H)]
+        if any(c is None for c in row_colors):
+            return None
+        # group consecutive same-color rows into bands
+        bands = []
+        start = 0
+        for r in range(1, H):
+            if row_colors[r] != row_colors[r - 1]:
+                bands.append((start, r - 1, row_colors[start]))
+                start = r
+        bands.append((start, H - 1, row_colors[start]))
+
+        out = [row[:] for row in grid]
+        filled = False
+        for (r0, r1, color) in bands:
+            for c in range(W):
+                if any(grid[r][c] == 0 for r in range(r0, r1 + 1)):
+                    for r in range(r0, r1 + 1):
+                        out[r][c] = 0   # 0 propagates through the column
+                    filled = True
+        return out if filled else None
+
+    def _try_vertical(self, grid):
+        H, W = len(grid), len(grid[0])
+        col_colors = [self._band_color([grid[r][c] for r in range(H)]) for c in range(W)]
+        if any(c is None for c in col_colors):
+            return None
+        strips = []
+        start = 0
+        for c in range(1, W):
+            if col_colors[c] != col_colors[c - 1]:
+                strips.append((start, c - 1, col_colors[start]))
+                start = c
+        strips.append((start, W - 1, col_colors[start]))
+
+        out = [row[:] for row in grid]
+        filled = False
+        for (c0, c1, color) in strips:
+            for r in range(H):
+                if any(grid[r][c] == 0 for c in range(c0, c1 + 1)):
+                    for c in range(c0, c1 + 1):
+                        out[r][c] = 0   # 0 propagates through the row
+                    filled = True
+        return out if filled else None
+
+    def _transform(self, grid):
+        result = self._try_horizontal(grid)
+        if result is not None:
+            return result
+        return self._try_vertical(grid)
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class TileRepeatExtractSolver(BaseSolver):
+    """
+    Input is a base tile repeated N≥2 times horizontally OR vertically.
+    Output is the first (top-left) tile.
+    Covers: 2dee498d and ~35 rect_crop tile-repeat tasks.
+    """
+    name = "tile_repeat_extract_solver"
+
+    def _detect_tile(self, grid):
+        H = len(grid)
+        W = len(grid[0])
+        # Horizontal repeat: search largest tile_w first; first tile appears ≥2 times
+        for tile_w in range(W - 1, 0, -1):
+            if W % tile_w != 0:
+                continue
+            n = W // tile_w
+            if n < 2:
+                continue
+            first = tuple(tuple(grid[r][0:tile_w]) for r in range(H))
+            count = sum(
+                1 for t in range(n)
+                if tuple(tuple(grid[r][t * tile_w:(t + 1) * tile_w]) for r in range(H)) == first
+            )
+            if count >= 2:
+                return [list(row) for row in first]
+        # Vertical repeat: search largest tile_h first; first tile appears ≥2 times
+        for tile_h in range(H - 1, 0, -1):
+            if H % tile_h != 0:
+                continue
+            n = H // tile_h
+            if n < 2:
+                continue
+            first = tuple(tuple(grid[r]) for r in range(tile_h))
+            count = sum(
+                1 for t in range(n)
+                if tuple(tuple(grid[t * tile_h + r]) for r in range(tile_h)) == first
+            )
+            if count >= 2:
+                return [list(row) for row in first]
+        return None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._detect_tile(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            tile = self._detect_tile(inp)
+            if tile is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(tile)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CrosshairBoxInteriorSolver(BaseSolver):
+    """
+    Exactly 2 non-bg cells of the SAME color at (r1,c1) and (r2,c2).
+    Output:
+      - Full row r1, full row r2, full col c1, full col c2 → color C
+      - Interior rectangle (rows r1+1..r2-1, cols c1+1..c2-1) → color 1
+    Covers: 21f83797.
+    """
+    name = "crosshair_box_interior_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c, grid[r][c]) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if len(non_bg) != 2:
+            return None
+        (r1, c1, col1), (r2, c2, col2) = non_bg
+        if col1 != col2:
+            return None
+        C = col1
+        out = [row[:] for row in grid]
+        for c in range(W):
+            out[r1][c] = C
+            out[r2][c] = C
+        for r in range(H):
+            out[r][c1] = C
+            out[r][c2] = C
+        min_r, max_r = min(r1, r2), max(r1, r2)
+        min_c, max_c = min(c1, c2), max(c1, c2)
+        for r in range(min_r + 1, max_r):
+            for c in range(min_c + 1, max_c):
+                out[r][c] = 1
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CrosshairDotSolver(BaseSolver):
+    """
+    Non-bg cells (all same color) on uniform background.
+    For each such cell (r, c):
+      - Fill entire row r and entire col c with the cell color
+      - Set (r, c) = 2
+      - Set diagonal neighbors (r±1, c±1) = 3 (only if they were background)
+    Covers: 140c817e.
+    """
+    name = "crosshair_dot_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if not non_bg:
+            return None
+        colors = {grid[r][c] for r, c in non_bg}
+        if len(colors) != 1:
+            return None
+        cell_color = colors.pop()
+        out = [row[:] for row in grid]
+        # Step 1: fill rows and cols
+        for r, c in non_bg:
+            for cc in range(W):
+                out[r][cc] = cell_color
+            for rr in range(H):
+                out[rr][c] = cell_color
+        # Step 2: mark original cells as 2, diagonal neighbors as 3
+        for r, c in non_bg:
+            out[r][c] = 2
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < H and 0 <= nc < W and grid[nr][nc] == bg:
+                    out[nr][nc] = 3
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class StripeFenceSolver(BaseSolver):
+    """
+    Single non-bg cell at BOTTOM row (H-1), column c, color K.
+    Output:
+      - Columns c, c+2, c+4, ... (stride 2, while < W) entirely filled with K
+      - Connectors at column c+2k+1 for k=0,1,2,...:
+          if k even → row 0 (top) = 5; if k odd → row H-1 (bottom) = 5
+          skip if column out of bounds
+    Covers: 8403a5d5.
+    """
+    name = "stripe_fence_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c, grid[r][c]) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if len(non_bg) != 1:
+            return None
+        r0, c0, K = non_bg[0]
+        if r0 != H - 1:
+            return None
+        out = [row[:] for row in grid]
+        # Fill stride-2 columns
+        for c in range(c0, W, 2):
+            for r in range(H):
+                out[r][c] = K
+        # Place connectors
+        k = 0
+        while True:
+            conn_col = c0 + 2 * k + 1
+            if conn_col >= W:
+                break
+            conn_row = 0 if k % 2 == 0 else H - 1
+            out[conn_row][conn_col] = 5
+            k += 1
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
