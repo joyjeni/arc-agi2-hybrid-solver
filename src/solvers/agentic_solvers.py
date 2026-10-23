@@ -5961,3 +5961,523 @@ class TileRotateSolver(BaseSolver):
                 return None
             preds.append(_mk(g, self.name))
         return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p109 — VerticalRunRankSolver — task 08ed6ac7
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class VerticalRunRankSolver(BaseSolver):
+    """p109 — task 08ed6ac7: vertical runs of 5 ranked by length desc → colors 1,2,3,..."""
+
+    @property
+    def name(self) -> str:
+        return "VerticalRunRankSolver"
+
+    @property
+    def priority(self) -> int:
+        return 109
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        all_runs = []  # (length, col, start_row, end_row)
+        for c in range(W):
+            r = 0
+            while r < H:
+                if inp[r][c] == 5:
+                    start = r
+                    while r < H and inp[r][c] == 5:
+                        r += 1
+                    all_runs.append((r - start, c, start, r - 1))
+                else:
+                    r += 1
+        if not all_runs:
+            return None
+        unique_lengths = sorted(set(x[0] for x in all_runs), reverse=True)
+        len_to_rank = {l: i + 1 for i, l in enumerate(unique_lengths)}
+        out = [[0] * W for _ in range(H)]
+        for (length, c, start, end) in all_runs:
+            rank = len_to_rank[length]
+            for row in range(start, end + 1):
+                out[row][c] = rank
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p110 — FillEnclosureByAreaSolver — task 00dbd492
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class FillEnclosureByAreaSolver(BaseSolver):
+    """p110 — task 00dbd492: rectangular borders of 2s; fill interior by learned size→color map."""
+
+    @property
+    def name(self) -> str:
+        return "FillEnclosureByAreaSolver"
+
+    @property
+    def priority(self) -> int:
+        return 110
+
+    def _find_rectangles(self, grid):
+        H, W = len(grid), len(grid[0])
+        rects = []
+        for r in range(H):
+            for c in range(W):
+                if grid[r][c] != 2:
+                    continue
+                # top-left corner: no 2 directly above or to the left
+                if r > 0 and grid[r - 1][c] == 2:
+                    continue
+                if c > 0 and grid[r][c - 1] == 2:
+                    continue
+                # trace right
+                c2 = c
+                while c2 + 1 < W and grid[r][c2 + 1] == 2:
+                    c2 += 1
+                # trace down
+                r2 = r
+                while r2 + 1 < H and grid[r2 + 1][c] == 2:
+                    r2 += 1
+                if r2 == r or c2 == c:
+                    continue
+                # verify all four sides
+                if (all(grid[r][cc] == 2 for cc in range(c, c2 + 1)) and
+                        all(grid[r2][cc] == 2 for cc in range(c, c2 + 1)) and
+                        all(grid[rr][c] == 2 for rr in range(r, r2 + 1)) and
+                        all(grid[rr][c2] == 2 for rr in range(r, r2 + 1))):
+                    ih = r2 - r - 1
+                    iw = c2 - c - 1
+                    if ih > 0 and iw > 0:
+                        rects.append((r, c, r2, c2, ih, iw))
+        return rects
+
+    def _learn_mapping(self, pairs):
+        size_to_color = {}
+        for pair in pairs:
+            inp, out = pair["input"], pair["output"]
+            # Only learn from same-size pairs
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                continue
+            for (r1, c1, r2, c2, ih, iw) in self._find_rectangles(inp):
+                for r in range(r1 + 1, r2):
+                    if r >= len(out):
+                        break
+                    for c in range(c1 + 1, c2):
+                        if c >= len(out[r]):
+                            break
+                        v = out[r][c]
+                        if v != 0 and v != 2:
+                            size_to_color[(ih, iw)] = v
+                            break
+                    else:
+                        continue
+                    break
+        return size_to_color
+
+    def _apply(self, inp, size_to_color):
+        out = [list(row) for row in inp]
+        for (r1, c1, r2, c2, ih, iw) in self._find_rectangles(inp):
+            fill = size_to_color.get((ih, iw))
+            if fill is None:
+                return None
+            for r in range(r1 + 1, r2):
+                for c in range(c1 + 1, c2):
+                    if inp[r][c] == 0:
+                        out[r][c] = fill
+        return out
+
+    def solve(self, ctx: TaskContext):
+        mapping = self._learn_mapping(ctx.train_pairs)
+        if not mapping:
+            return None
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"], mapping)
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp, mapping)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p111 — KeyCornerSwapSolver — task 0becf7df
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class KeyCornerSwapSolver(BaseSolver):
+    """p111 — task 0becf7df: top-left 2×2 key defines swap pairs a↔b, c↔d; apply to body."""
+
+    @property
+    def name(self) -> str:
+        return "KeyCornerSwapSolver"
+
+    @property
+    def priority(self) -> int:
+        return 111
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        if H < 2 or W < 2:
+            return None
+        a, b = inp[0][0], inp[0][1]
+        c, d = inp[1][0], inp[1][1]
+        swap_map = {}
+        for v1, v2 in [(a, b), (c, d)]:
+            if v1 != v2:
+                swap_map[v1] = v2
+                swap_map[v2] = v1
+        out = [list(row) for row in inp]
+        for r in range(H):
+            for col in range(W):
+                if r < 2 and col < 2:
+                    continue  # preserve key
+                out[r][col] = swap_map.get(inp[r][col], inp[r][col])
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p112 — GridSeparatorBandSolver — task 1190e5a7
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class GridSeparatorBandSolver(BaseSolver):
+    """p112 — task 1190e5a7: separator rows/cols → output (#row_bands × #col_bands) grid of fill_color."""
+
+    @property
+    def name(self) -> str:
+        return "GridSeparatorBandSolver"
+
+    @property
+    def priority(self) -> int:
+        return 112
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        sep_color = None
+        sep_rows = []
+        for r in range(H):
+            vals = set(inp[r])
+            if len(vals) == 1 and 0 not in vals:
+                sep_rows.append(r)
+                sep_color = next(iter(vals))
+        sep_cols = []
+        for c in range(W):
+            vals = set(inp[r][c] for r in range(H))
+            if len(vals) == 1 and 0 not in vals:
+                sep_cols.append(c)
+                if sep_color is None:
+                    sep_color = next(iter(vals))
+        if sep_color is None:
+            return None
+        sep_row_set = set(sep_rows)
+        sep_col_set = set(sep_cols)
+        fill_color = None
+        for r in range(H):
+            if r in sep_row_set:
+                continue
+            for c in range(W):
+                if c in sep_col_set:
+                    continue
+                v = inp[r][c]
+                if v != 0 and v != sep_color:
+                    fill_color = v
+                    break
+            if fill_color is not None:
+                break
+        if fill_color is None:
+            return None
+        num_row_bands = len(sep_rows) + 1
+        num_col_bands = len(sep_cols) + 1
+        return [[fill_color] * num_col_bands for _ in range(num_row_bands)]
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p113 — GridGapFillerSolver — task 137f0df0
+# ─────────────────────────────────────────────────────────────────
+_GAP_FILL = {
+    ('S', 'S'): None,  # keep original
+    ('S', 'B'): 2,
+    ('S', 'E'): 0,
+    ('B', 'S'): 2,
+    ('B', 'B'): 2,
+    ('B', 'E'): 1,
+    ('E', 'S'): 0,
+    ('E', 'B'): 1,
+    ('E', 'E'): 0,
+}
+
+
+@register_solver
+class GridGapFillerSolver(BaseSolver):
+    """p113 — task 137f0df0: classify rows/cols as S/B/E (5-bearing/between-gap/edge-gap) then fill."""
+
+    @property
+    def name(self) -> str:
+        return "GridGapFillerSolver"
+
+    @property
+    def priority(self) -> int:
+        return 113
+
+    def _row_types(self, grid):
+        H = len(grid)
+        has_five = [any(v == 5 for v in row) for row in grid]
+        types = []
+        for r in range(H):
+            if has_five[r]:
+                types.append('S')
+            else:
+                above = any(has_five[:r])
+                below = any(has_five[r + 1:])
+                types.append('B' if (above and below) else 'E')
+        return types
+
+    def _col_types(self, grid):
+        H, W = len(grid), len(grid[0])
+        has_five = [any(grid[r][c] == 5 for r in range(H)) for c in range(W)]
+        types = []
+        for c in range(W):
+            if has_five[c]:
+                types.append('S')
+            else:
+                left = any(has_five[:c])
+                right = any(has_five[c + 1:])
+                types.append('B' if (left and right) else 'E')
+        return types
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        rt = self._row_types(inp)
+        ct = self._col_types(inp)
+        out = [[0] * W for _ in range(H)]
+        for r in range(H):
+            for c in range(W):
+                fill = _GAP_FILL.get((rt[r], ct[c]))
+                out[r][c] = inp[r][c] if fill is None else fill
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p114 — FourFoldReflectionSolver — task 0c786b71
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class FourFoldReflectionSolver(BaseSolver):
+    """p114 — task 0c786b71: H×W → 2H×2W; TL=180°rot, TR=flip_v, BL=flip_h, BR=original."""
+
+    @property
+    def name(self) -> str:
+        return "FourFoldReflectionSolver"
+
+    @property
+    def priority(self) -> int:
+        return 114
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        out = [[0] * (2 * W) for _ in range(2 * H)]
+        for r in range(H):
+            for c in range(W):
+                out[H + r][W + c] = inp[r][c]               # BR: original
+                out[H + r][c] = inp[r][W - 1 - c]           # BL: flip_h
+                out[r][W + c] = inp[H - 1 - r][c]           # TR: flip_v
+                out[r][c] = inp[H - 1 - r][W - 1 - c]       # TL: 180°rot
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p115 — ColStripePeriodSolver — task 0a938d79
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class ColStripePeriodSolver(BaseSolver):
+    """p115 — task 0a938d79: two seed cells define column-stripe period; fill all rows."""
+
+    @property
+    def name(self) -> str:
+        return "ColStripePeriodSolver"
+
+    @property
+    def priority(self) -> int:
+        return 115
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        seeds = [(r, c, inp[r][c]) for r in range(H) for c in range(W) if inp[r][c] != 0]
+        if len(seeds) != 2:
+            return None
+        r1, c1, v1 = seeds[0]
+        r2, c2, v2 = seeds[1]
+        dr = abs(r2 - r1)
+        dc = abs(c2 - c1)
+        if dr == 0 and dc == 0:
+            return None
+        out = [list(row) for row in inp]
+        if dc == 0 or (dr > 0 and dr <= dc):
+            # Fill ROWS: step = dr (row period)
+            step = dr if dr > 0 else 1
+            if r2 < r1:
+                r1, v1, r2, v2 = r2, v2, r1, v1
+            for r in range(r1, H):
+                dist = r - r1
+                if dist % step == 0:
+                    k = dist // step
+                    color = v1 if k % 2 == 0 else v2
+                    for col in range(W):
+                        out[r][col] = color
+        else:
+            # Fill COLUMNS: step = dc (col period)
+            step = dc
+            if c2 < c1:
+                c1, v1, c2, v2 = c2, v2, c1, v1
+            for c in range(c1, W):
+                dist = c - c1
+                if dist % step == 0:
+                    k = dist // step
+                    color = v1 if k % 2 == 0 else v2
+                    for row in range(H):
+                        out[row][c] = color
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p116 — ContinueDiagonalSeqSolver — task 0b17323b
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class ContinueDiagonalSeqSolver(BaseSolver):
+    """p116 — task 0b17323b: diagonal arithmetic seq of 1s; extend with value 2."""
+
+    @property
+    def name(self) -> str:
+        return "ContinueDiagonalSeqSolver"
+
+    @property
+    def priority(self) -> int:
+        return 116
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        seeds = sorted([(r, c) for r in range(H) for c in range(W) if inp[r][c] == 1])
+        if len(seeds) < 2:
+            return None
+        drs = [seeds[i + 1][0] - seeds[i][0] for i in range(len(seeds) - 1)]
+        dcs = [seeds[i + 1][1] - seeds[i][1] for i in range(len(seeds) - 1)]
+        if len(set(drs)) != 1 or len(set(dcs)) != 1:
+            return None
+        dr, dc = drs[0], dcs[0]
+        if dr == 0 and dc == 0:
+            return None
+        out = [list(row) for row in inp]
+        r, c = seeds[-1][0] + dr, seeds[-1][1] + dc
+        while 0 <= r < H and 0 <= c < W:
+            out[r][c] = 2
+            r += dr
+            c += dc
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
