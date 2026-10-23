@@ -3439,3 +3439,102 @@ class DiagonalExtendEightSolver(BaseSolver):
         if any(r is None for r in results):
             return None
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# EightMarkerExtractSolver — targets task 5117e062
+# Rule: Grid contains several 3×3-shaped objects in various colors.
+#       Exactly one object has a color-8 cell.
+#       BFS (4-connected) from the 8-cell collects the full connected component.
+#       The bounding box of that component must be exactly 3×3.
+#       Extract that 3×3 region; replace every 8 with the dominant
+#       non-zero, non-8 color found in the region. Output the 3×3 grid.
+# ---------------------------------------------------------------------------
+@register_solver
+class EightMarkerExtractSolver(BaseSolver):
+    name = "EightMarkerExtractSolver"
+
+    # ------------------------------------------------------------------
+    def _bfs_component(self, grid, sr, sc):
+        """Return set of (r,c) for the 4-connected non-zero component at (sr,sc)."""
+        rows, cols = len(grid), len(grid[0])
+        visited = set()
+        queue = [(sr, sc)]
+        visited.add((sr, sc))
+        while queue:
+            r, c = queue.pop(0)
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
+                    if grid[nr][nc] != 0:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        return visited
+
+    def _extract(self, grid):
+        """
+        Find color-8 cell, BFS its component, verify 3×3 bbox,
+        replace 8 with dominant non-0/non-8 color, return 3×3 grid.
+        Returns None on any failure.
+        """
+        rows, cols = len(grid), len(grid[0])
+        # Find color-8 cell(s)
+        eight_cells = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 8]
+        if not eight_cells:
+            return None
+
+        # Use first 8 cell as BFS seed
+        sr, sc = eight_cells[0]
+        comp = self._bfs_component(grid, sr, sc)
+
+        # Bounding box
+        rs = [r for r, c in comp]
+        cs = [c for r, c in comp]
+        min_r, max_r = min(rs), max(rs)
+        min_c, max_c = min(cs), max(cs)
+        if (max_r - min_r + 1) != 3 or (max_c - min_c + 1) != 3:
+            return None
+
+        # Extract 3×3 region from grid (not just component cells — full bbox)
+        region = [[grid[min_r + dr][min_c + dc] for dc in range(3)] for dr in range(3)]
+
+        # Dominant non-zero, non-8 color in region
+        from collections import Counter
+        cnt = Counter(
+            region[dr][dc]
+            for dr in range(3) for dc in range(3)
+            if region[dr][dc] not in (0, 8)
+        )
+        if not cnt:
+            return None
+        dom_color = cnt.most_common(1)[0][0]
+
+        # Replace 8 → dominant color
+        result = [[dom_color if region[dr][dc] == 8 else region[dr][dc]
+                   for dc in range(3)] for dr in range(3)]
+        return result
+
+    # ------------------------------------------------------------------
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp = p["input"]
+            out = p["output"]
+            # Output must be 3×3
+            if len(out) != 3 or len(out[0]) != 3:
+                return False
+            # Input must contain color 8
+            rows, cols = len(inp), len(inp[0])
+            if not any(inp[r][c] == 8 for r in range(rows) for c in range(cols)):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        # Validate on all training pairs
+        for p in ctx.train_pairs:
+            pred = self._extract(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        results = [self._extract(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
