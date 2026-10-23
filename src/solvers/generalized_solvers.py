@@ -3822,3 +3822,56 @@ class ArmCollapseOnFiveSolver(BaseSolver):
             pred = self._transform(test_inp)
             results.append(pred)
         return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# AlignToColorOneSolver — task 1caeab9d
+# Colors {0,1,2,4}. Each non-background shape vertically shifts so its
+# top-most row aligns with the top-most row of the color-1 shape.
+# Column positions of all cells are preserved.
+# ---------------------------------------------------------------------------
+@register_solver
+class AlignToColorOneSolver(BaseSolver):
+    name = "AlignToColorOneSolver"
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            colors = {c for row in inp for c in row}
+            if not colors <= {0, 1, 2, 4}:
+                return False
+            if 1 not in colors:
+                return False
+        return True
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        color_cells = {}
+        for r in range(R):
+            for c in range(C):
+                v = grid[r][c]
+                if v != 0:
+                    color_cells.setdefault(v, []).append((r, c))
+        if 1 not in color_cells:
+            return grid
+        ref_top = min(r for r, c in color_cells[1])
+        out = [[0] * C for _ in range(R)]
+        for r, c in color_cells[1]:
+            out[r][c] = 1
+        for color, cells in color_cells.items():
+            if color == 1:
+                continue
+            top = min(r for r, c in cells)
+            shift = ref_top - top
+            for r, c in cells:
+                nr = r + shift
+                if 0 <= nr < R:
+                    out[nr][c] = color
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
