@@ -35,6 +35,7 @@ SRC_FILES = [
     "src/solvers/advanced_solvers11.py",
     "src/solvers/advanced_solvers12.py",
     "src/solvers/advanced_solvers13.py",
+    "src/solvers/advanced_solvers14.py",
     "src/solvers/agentic_solvers.py",
     "src/solvers/dsa_solvers.py",
     "src/solvers/generalized_solvers.py",

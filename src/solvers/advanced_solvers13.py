@@ -232,16 +232,18 @@ class MostClustersColorSolver(BaseSolver):
 
     def _predict(self, grid: Grid) -> Optional[Grid]:
         colors = _non_zero_colors(grid)
-        best_n = 1  # require at least 2
+        best_n = 1  # require at least 2 clusters
         best_bboxes = None
         for col in colors:
             comps = _components_8_color(grid, col)
-            if len(comps) <= best_n: continue
+            if len(comps) <= best_n:
+                continue
             bboxes = [_cells_bbox(c) for c in comps]
-            sizes = set((r1-r0+1, c1-c0+1) for r0, c0, r1, c1 in bboxes)
-            if len(sizes) != 1: continue  # all must be same size
-            best_n = len(comps); best_bboxes = bboxes
-        if best_bboxes is None: return None
+            # Generalized: no uniform-size constraint — just most clusters
+            best_n = len(comps)
+            best_bboxes = bboxes
+        if best_bboxes is None:
+            return None
         tl = min(best_bboxes, key=lambda b: (b[0], b[1]))
         r0, c0, r1, c1 = tl
         return _extract(grid, r0, c0, r1, c1)
