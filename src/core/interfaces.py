@@ -17,6 +17,9 @@ class TaskContext:
     task_id: str
     train_pairs: list[Pair]
     test_inputs: list[Grid]
+    # Stage-3 hints: best-guess grids from Qwen3-4B TTT, one per test input.
+    # Set by run_stage3(); Stage-2 solvers use these as attempt_2 fallbacks.
+    stage3_hints: list[Grid] | None = None
 
 
 @dataclass

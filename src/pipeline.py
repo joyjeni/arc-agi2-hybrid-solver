@@ -1,11 +1,19 @@
 """
-Main pipeline orchestrator — runs all 3 tiers in sequence.
+Main pipeline orchestrator — three stages in reversed priority order.
 
-Tier 1: DSA / Vedic deterministic solvers    (parallel, ≤300 s total, ≤5 s/task)
-Tier 2: Program Synthesis via LLM           (adaptive fair-share, ≤45 s/task)
-Tier 3: Chakra Ensemble direct prediction   (adaptive fair-share, ≤90 s/task)
+NEW ORDER (Stage 3 → Stage 2 → Stage 1):
+  Stage 3 │ Qwen3-4B LLM + Test-Time Training  (per-task TTT, biggest budget)
+  Stage 2 │ Pattern Induction Engine            (all registered solvers, parallel)
+  Stage 1 │ Deterministic Rule Bank             (DSA / Vedic solvers, fast fallback)
 
-Total target: 35–45 % on ARC-AGI-2 evaluation set within 5 h wall-clock.
+Stage-3 predictions are stored in TaskContext.stage3_hints so Stage-2 and
+Stage-1 solvers can use them as a fallback attempt_2 when their own match
+produces only one confident answer.
+
+Budget allocation (5 h wall-clock = 18 000 s):
+  Stage 3  60 % → max 10 800 s
+  Stage 2  25 % → max  4 500 s
+  Stage 1  15 % → max    300 s (always fast/parallel)
 """
 
 from __future__ import annotations
@@ -22,6 +30,19 @@ from .solvers import REGISTRY
 from .solvers.registry import SolverRegistry
 
 logger = logging.getLogger(__name__)
+
+# ── Solver-tier classification ────────────────────────────────────────────────
+# Stage 1 = deterministic (dsa_solvers, vedic_solvers)
+# Stage 2 = pattern induction (all other registered solvers)
+# Stage 3 = LLM (handled separately, not from registry)
+
+_STAGE1_MODULES = frozenset({"dsa_solvers", "vedic_solvers"})
+
+
+def _solver_stage(solver) -> int:
+    """Return 1 (deterministic) or 2 (pattern induction) for registered solvers."""
+    mod = solver.__class__.__module__.split(".")[-1]
+    return 1 if mod in _STAGE1_MODULES else 2
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
@@ -43,47 +64,175 @@ def load_solutions(path: str | Path) -> dict:
     return json.loads(Path(path).read_text())
 
 
-# ── Tier-1 DSA runner (parallel) ─────────────────────────────────────────────
+# ── Stage 3: Qwen3-4B TTT ─────────────────────────────────────────────────────
 
-def run_tier1(
+def run_stage3(
+    tasks: dict[str, TaskContext],
+    already_solved: set[str],
+    llm_engine,                         # QwenEngine (for Chakra/ProgramSynth)
+    time_budget_s: float = 10800.0,
+    *,
+    ttt_per_task_s: float = 120.0,
+    skip_ttt: bool = False,
+    skip_chakra: bool = False,
+    skip_progsynth: bool = False,
+    n_templates: int = 4,
+) -> dict[str, SolverResult]:
+    """
+    Stage 3: LLM + Test-Time Training pipeline.
+
+    Sub-stages (in order, budget shared):
+      3a  Qwen3-4B TTT solver   (new — per-task gradient update)
+      3b  Chakra Ensemble        (existing LLM, n_templates prompts)
+      3c  Program Synthesis      (existing LLM, code-gen approach)
+
+    Each sub-stage only touches tasks not yet solved by earlier sub-stages.
+    Stage-3 hints (TTT best guesses) are written into ctx.stage3_hints for
+    downstream stages to use as fallback attempt_2.
+    """
+    from .llm.qwen3_ttt_solver import Qwen3TTTSolver
+    from .llm.chakra_ensemble import ChakraEnsembleSolver
+    from .llm.program_synth import ProgramSynthesisSolver
+
+    pending = {tid: ctx for tid, ctx in tasks.items() if tid not in already_solved}
+    n_pending = len(pending)
+    logger.info(
+        "Stage-3: %d tasks | budget=%.0fs | ttt_per_task=%.0fs",
+        n_pending, time_budget_s, ttt_per_task_s,
+    )
+
+    results: dict[str, SolverResult] = {}
+    t0 = time.perf_counter()
+
+    def _remaining() -> float:
+        return time_budget_s - (time.perf_counter() - t0)
+
+    # ── 3a: Qwen3-4B TTT ──────────────────────────────────────────
+    if not skip_ttt and _remaining() > 30:
+        ttt_solver = Qwen3TTTSolver()
+        solved_3a = set()
+        for tid, ctx in list(pending.items()):
+            if _remaining() < 30:
+                break
+            if _remaining() / max(1, n_pending - len(solved_3a)) < 10:
+                break
+            try:
+                res = ttt_solver._timed_solve(ctx)
+                if res and res.solved:
+                    results[tid] = res
+                    solved_3a.add(tid)
+                    logger.debug("Stage-3a TTT solved %s", tid)
+            except Exception as exc:
+                logger.debug("Stage-3a TTT %s: %s", tid, exc)
+        logger.info(
+            "Stage-3a TTT: %d/%d solved (%.1fs elapsed)",
+            len(solved_3a), n_pending, time.perf_counter() - t0,
+        )
+
+    solved_so_far = already_solved | set(results)
+
+    # ── 3b: Chakra Ensemble ────────────────────────────────────────
+    if not skip_chakra and _remaining() > 60:
+        unsolved_chakra = [(tid, ctx) for tid, ctx in pending.items()
+                           if tid not in solved_so_far]
+        chakra_budget = min(_remaining() * 0.55, 7200.0)
+        per_chakra = max(20.0, min(90.0, chakra_budget / max(len(unsolved_chakra), 1)))
+        for tid, ctx in unsolved_chakra:
+            if _remaining() < 60:
+                break
+            solver = ChakraEnsembleSolver(
+                llm_engine, n_templates=n_templates, per_task_timeout=per_chakra
+            )
+            try:
+                res = solver._timed_solve(ctx)
+                if res and res.solved:
+                    results[tid] = res
+                    solved_so_far.add(tid)
+                    logger.debug("Stage-3b Chakra solved %s", tid)
+            except Exception as exc:
+                logger.debug("Stage-3b Chakra %s: %s", tid, exc)
+        logger.info(
+            "Stage-3b Chakra: total Stage-3 now %d/%d (%.1fs elapsed)",
+            len(results), n_pending, time.perf_counter() - t0,
+        )
+
+    # ── 3c: Program Synthesis ──────────────────────────────────────
+    if not skip_progsynth and _remaining() > 30:
+        unsolved_ps = [(tid, ctx) for tid, ctx in pending.items()
+                       if tid not in solved_so_far]
+        ps_budget = _remaining()
+        per_ps = max(10.0, min(45.0, ps_budget / max(len(unsolved_ps), 1)))
+        ps_solver = ProgramSynthesisSolver(llm_engine)
+        for tid, ctx in unsolved_ps:
+            if _remaining() < 30:
+                break
+            try:
+                res = ps_solver._timed_solve(ctx)
+                if res and res.solved:
+                    results[tid] = res
+                    solved_so_far.add(tid)
+                    logger.debug("Stage-3c ProgramSynth solved %s", tid)
+            except Exception as exc:
+                logger.debug("Stage-3c PS %s: %s", tid, exc)
+        logger.info(
+            "Stage-3c PS: total Stage-3 now %d/%d (%.1fs elapsed)",
+            len(results), n_pending, time.perf_counter() - t0,
+        )
+
+    elapsed = time.perf_counter() - t0
+    logger.info("Stage-3 done in %.1fs: %d/%d solved", elapsed, len(results), n_pending)
+    return results
+
+
+# ── Stage 2: Pattern Induction (registered solvers) ──────────────────────────
+
+def run_stage2(
     tasks: dict[str, TaskContext],
     already_solved: set[str],
     registry: SolverRegistry,
     *,
-    total_budget_s: float = 300.0,
-    per_task_s: float = 5.0,
+    total_budget_s: float = 4500.0,
+    per_task_s: float = 8.0,
 ) -> dict[str, SolverResult]:
     """
-    Run all registered deterministic solvers in parallel.
+    Stage 2: Pattern Induction — all registered non-deterministic solvers.
 
-    Uses ThreadPoolExecutor so CPU-bound solvers run concurrently.
-    Hard wall-clock budget: futures that haven't finished by ``total_budget_s``
-    are cancelled and skipped — no hanging.
+    Runs in parallel (ThreadPoolExecutor).  Tasks that have stage3_hints
+    available use those as fallback attempt_2 when the solver produces only
+    one grid. This is how Stage 2 "learns from Stage 3".
     """
-    solvers = [s for s in registry.all_solvers() if s.name != "IdentitySolver"]
-    solvers.sort(key=lambda s: s.priority)
+    # Select pattern-induction solvers (exclude DSA/Vedic Stage-1 modules)
+    all_solvers = [s for s in registry.all_solvers() if s.name != "IdentitySolver"]
+    solvers = sorted(
+        [s for s in all_solvers if _solver_stage(s) == 2],
+        key=lambda s: s.priority,
+    )
 
     pending = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
     n_workers = min(8, max(len(pending), 1))
     logger.info(
-        "Tier-1: %d solvers × %d tasks | workers=%d budget=%.0fs per_task=%.0fs",
-        len(solvers), len(pending), n_workers, total_budget_s, per_task_s,
+        "Stage-2: %d pattern solvers × %d tasks | workers=%d budget=%.0fs",
+        len(solvers), len(pending), n_workers, total_budget_s,
     )
 
-    def _solve_one(item: tuple) -> tuple[str, SolverResult | None]:
+    def _solve_one(item):
         tid, ctx = item
         t_start = time.perf_counter()
         for solver in solvers:
-            # Honour per-task budget inside the worker thread
             if time.perf_counter() - t_start > per_task_s:
-                logger.debug("T1 per-task budget hit on %s", tid)
                 break
             try:
                 res = solver._timed_solve(ctx)
                 if res and res.solved:
+                    # If Stage-3 produced hints, use them as attempt_2 fallback
+                    if ctx.stage3_hints:
+                        for i, pred in enumerate(res.predictions):
+                            if (i < len(ctx.stage3_hints)
+                                    and ctx.stage3_hints[i] is not None):
+                                pred.attempt_2 = ctx.stage3_hints[i]
                     return tid, res
             except Exception as exc:
-                logger.debug("T1 %s/%s: %s", solver.name, tid, exc)
+                logger.debug("S2 %s/%s: %s", solver.name, tid, exc)
         return tid, None
 
     results: dict[str, SolverResult] = {}
@@ -92,160 +241,149 @@ def run_tier1(
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
         futures = {pool.submit(_solve_one, item): item[0] for item in pending}
         done, not_done = _fut_wait(list(futures.keys()), timeout=total_budget_s)
-
-        # Cancel futures that haven't started yet
         for fut in not_done:
             fut.cancel()
-
         for fut in done:
             try:
                 tid, res = fut.result(timeout=0)
                 if res:
                     results[tid] = res
-                    logger.debug("T1 solved %s", tid)
             except Exception as exc:
-                logger.debug("T1 result error: %s", exc)
+                logger.debug("S2 result error: %s", exc)
 
     elapsed = time.perf_counter() - t0
     logger.info(
-        "Tier-1 done in %.1fs: %d/%d solved (%d timed-out / cancelled)",
+        "Stage-2 done in %.1fs: %d/%d solved (%d timed-out)",
         elapsed, len(results), len(pending), len(not_done),
     )
     return results
 
 
-# ── Tier-2 Program Synthesis runner ──────────────────────────────────────────
+# ── Stage 1: Deterministic Rule Bank (DSA / Vedic) ───────────────────────────
 
-def run_tier2(
+def run_stage1(
     tasks: dict[str, TaskContext],
     already_solved: set[str],
-    llm_engine,
-    time_budget_s: float = 2400.0,
+    registry: SolverRegistry,
     *,
-    per_task_s: float = 45.0,
+    total_budget_s: float = 300.0,
+    per_task_s: float = 5.0,
 ) -> dict[str, SolverResult]:
     """
-    Run program synthesis with adaptive fair-share per-task budgeting.
+    Stage 1: Deterministic Rule Bank — DSA/Vedic solvers, fast parallel fallback.
 
-    Each task receives ``min(per_task_s, remaining_budget / tasks_remaining)``
-    seconds.  The loop exits early whenever the budget or fair-share falls below
-    the 10 s minimum.  Hard interrupt (SIGALRM) is applied by the notebook caller
-    around this function for an additional safety layer.
+    Runs last. These solvers are exact-match: either they fire or they don't.
+    Stage-3 hints are injected as attempt_2 for tasks the deterministic solver
+    partially matches (confidence > 0 but attempt_2 unavailable).
     """
-    from .llm.program_synth import ProgramSynthesisSolver
-
-    solver = ProgramSynthesisSolver(llm_engine)
-    pending_items = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
-    n_pending = len(pending_items)
-    logger.info(
-        "Tier-2: %d tasks | budget=%.0fs | max_per_task=%.0fs",
-        n_pending, time_budget_s, per_task_s,
+    all_solvers = [s for s in registry.all_solvers() if s.name != "IdentitySolver"]
+    solvers = sorted(
+        [s for s in all_solvers if _solver_stage(s) == 1],
+        key=lambda s: s.priority,
     )
+
+    pending = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
+    n_workers = min(8, max(len(pending), 1))
+    logger.info(
+        "Stage-1: %d deterministic solvers × %d tasks | workers=%d budget=%.0fs",
+        len(solvers), len(pending), n_workers, total_budget_s,
+    )
+
+    def _solve_one(item):
+        tid, ctx = item
+        t_start = time.perf_counter()
+        for solver in solvers:
+            if time.perf_counter() - t_start > per_task_s:
+                break
+            try:
+                res = solver._timed_solve(ctx)
+                if res and res.solved:
+                    # Inject Stage-3 hints as attempt_2 when present
+                    if ctx.stage3_hints:
+                        for i, pred in enumerate(res.predictions):
+                            if (i < len(ctx.stage3_hints)
+                                    and ctx.stage3_hints[i] is not None):
+                                pred.attempt_2 = ctx.stage3_hints[i]
+                    return tid, res
+            except Exception as exc:
+                logger.debug("S1 %s/%s: %s", solver.name, tid, exc)
+        return tid, None
 
     results: dict[str, SolverResult] = {}
     t0 = time.perf_counter()
 
-    for i, (tid, ctx) in enumerate(pending_items):
-        elapsed = time.perf_counter() - t0
-        remaining = time_budget_s - elapsed
-        if remaining < 30.0:
-            logger.info("Tier-2: budget exhausted at task %d/%d", i, n_pending)
-            break
-
-        # Fair-share: distribute remaining budget equally over remaining tasks
-        tasks_left = n_pending - i
-        fair_share = remaining / tasks_left
-        actual_per_task = min(per_task_s, fair_share)
-        if actual_per_task < 10.0:
-            logger.info("Tier-2: fair-share %.1fs < 10 s, stopping", actual_per_task)
-            break
-
-        logger.debug("T2 [%d/%d] %s | slot=%.0fs", i + 1, n_pending, tid, actual_per_task)
-        t_task = time.perf_counter()
-        try:
-            res = solver._timed_solve(ctx)
-            task_elapsed = time.perf_counter() - t_task
-            if res and res.solved:
-                results[tid] = res
-                logger.info("T2 solved %s in %.1fs", tid, task_elapsed)
-            if task_elapsed > actual_per_task * 1.5:
-                logger.warning(
-                    "T2 %s overran slot: %.1fs > %.0fs "
-                    "(signal.SIGALRM in notebook should have caught this)",
-                    tid, task_elapsed, actual_per_task,
-                )
-        except Exception as exc:
-            logger.debug("T2 %s error: %s", tid, exc)
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        futures = {pool.submit(_solve_one, item): item[0] for item in pending}
+        done, not_done = _fut_wait(list(futures.keys()), timeout=total_budget_s)
+        for fut in not_done:
+            fut.cancel()
+        for fut in done:
+            try:
+                tid, res = fut.result(timeout=0)
+                if res:
+                    results[tid] = res
+            except Exception as exc:
+                logger.debug("S1 result error: %s", exc)
 
     elapsed = time.perf_counter() - t0
-    logger.info("Tier-2 done in %.1fs: %d/%d solved", elapsed, len(results), n_pending)
+    logger.info(
+        "Stage-1 done in %.1fs: %d/%d solved (%d timed-out)",
+        elapsed, len(results), len(pending), len(not_done),
+    )
     return results
 
 
-# ── Tier-3 Chakra Ensemble runner ─────────────────────────────────────────────
+# ── Backward-compat aliases (benchmark runner uses run_tier1) ─────────────────
 
-def run_tier3(
-    tasks: dict[str, TaskContext],
-    already_solved: set[str],
-    llm_engine,
-    time_budget_s: float = 18000.0,
-    n_templates: int = 4,
-    *,
-    per_task_s: float = 90.0,
-) -> dict[str, SolverResult]:
-    """
-    Run Chakra ensemble with adaptive fair-share per-task budgeting.
+def run_tier1(tasks, already_solved, registry, *, total_budget_s=300.0, per_task_s=5.0):
+    """Alias: run both Stage-2 and Stage-1 registered solvers sequentially."""
+    r2 = run_stage2(tasks, already_solved, registry,
+                    total_budget_s=total_budget_s * 0.70, per_task_s=per_task_s)
+    solved = already_solved | set(r2)
+    r1 = run_stage1(tasks, solved, registry,
+                    total_budget_s=total_budget_s * 0.30, per_task_s=per_task_s)
+    r2.update(r1)
+    return r2
 
-    ``per_task_s`` is also forwarded to ``ChakraEnsembleSolver`` as its internal
-    template-futures timeout so the ensemble's own thread pool is bounded.
-    Hard interrupt is applied by the notebook caller via SIGALRM.
-    """
-    from .llm.chakra_ensemble import ChakraEnsembleSolver
 
-    pending_items = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
-    n_pending = len(pending_items)
-    logger.info(
-        "Tier-3: %d tasks | budget=%.0fs | max_per_task=%.0fs | templates=%d",
-        n_pending, time_budget_s, per_task_s, n_templates,
-    )
-
+def run_tier2(tasks, already_solved, llm_engine, time_budget_s=2400.0, *, per_task_s=45.0):
+    """Alias: program synthesis portion of Stage 3."""
+    from .llm.program_synth import ProgramSynthesisSolver
+    solver = ProgramSynthesisSolver(llm_engine)
+    pending = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
     results: dict[str, SolverResult] = {}
     t0 = time.perf_counter()
-
-    for i, (tid, ctx) in enumerate(pending_items):
-        elapsed = time.perf_counter() - t0
-        remaining = time_budget_s - elapsed
-        if remaining < 60.0:
-            logger.info("Tier-3: budget exhausted at task %d/%d", i, n_pending)
+    for i, (tid, ctx) in enumerate(pending):
+        if time_budget_s - (time.perf_counter() - t0) < 30:
             break
-
-        tasks_left = n_pending - i
-        fair_share = remaining / tasks_left
-        actual_per_task = min(per_task_s, fair_share)
-        if actual_per_task < 20.0:
-            logger.info("Tier-3: fair-share %.1fs < 20 s, stopping", actual_per_task)
-            break
-
-        # Rebuild solver per task so per_task_timeout is always tight
-        solver = ChakraEnsembleSolver(
-            llm_engine,
-            n_templates=n_templates,
-            per_task_timeout=actual_per_task,
-        )
-
-        logger.debug("T3 [%d/%d] %s | slot=%.0fs", i + 1, n_pending, tid, actual_per_task)
-        t_task = time.perf_counter()
         try:
             res = solver._timed_solve(ctx)
-            task_elapsed = time.perf_counter() - t_task
             if res and res.solved:
                 results[tid] = res
-                logger.info("T3 solved %s in %.1fs", tid, task_elapsed)
-        except Exception as exc:
-            logger.debug("T3 %s error: %s", tid, exc)
+        except Exception:
+            pass
+    return results
 
-    elapsed = time.perf_counter() - t0
-    logger.info("Tier-3 done in %.1fs: %d/%d solved", elapsed, len(results), n_pending)
+
+def run_tier3(tasks, already_solved, llm_engine, time_budget_s=18000.0,
+              n_templates=4, *, per_task_s=90.0):
+    """Alias: Chakra ensemble portion of Stage 3."""
+    from .llm.chakra_ensemble import ChakraEnsembleSolver
+    pending = [(tid, ctx) for tid, ctx in tasks.items() if tid not in already_solved]
+    results: dict[str, SolverResult] = {}
+    t0 = time.perf_counter()
+    for tid, ctx in pending:
+        if time_budget_s - (time.perf_counter() - t0) < 60:
+            break
+        solver = ChakraEnsembleSolver(
+            llm_engine, n_templates=n_templates, per_task_timeout=per_task_s
+        )
+        try:
+            res = solver._timed_solve(ctx)
+            if res and res.solved:
+                results[tid] = res
+        except Exception:
+            pass
     return results
 
 
@@ -257,18 +395,28 @@ def run_pipeline(
     solutions_path: str | None = None,
     model_path: str | None = None,
     server_url: str | None = None,
+    skip_stage3: bool = False,
+    skip_stage2: bool = False,
+    skip_stage1: bool = False,
+    # Legacy kwargs (kept for backward compat with notebook callers)
     skip_tier2: bool = False,
     skip_tier3: bool = False,
     time_limit_s: float = 18000.0,   # 5 h competition wall-clock
 ) -> dict:
-    """End-to-end pipeline. Returns the submission dict."""
+    """
+    End-to-end pipeline (Stage 3 → Stage 2 → Stage 1).
+
+    Stage 3  Qwen3-4B TTT + Chakra + ProgramSynth  60 % budget
+    Stage 2  All registered pattern solvers         25 % budget
+    Stage 1  DSA / Vedic deterministic              15 % budget (≤300 s)
+    """
     from .llm.engine import build_engine
 
     wall_start = time.perf_counter()
-    MARGIN = 300.0  # 5-min safety buffer for file I/O
+    MARGIN = 300.0   # 5-min safety buffer
 
     def _remaining() -> float:
-        return time_limit_s - (time.perf_counter() - wall_start) - MARGIN
+        return max(0.0, time_limit_s - (time.perf_counter() - wall_start) - MARGIN)
 
     # ── Load data ──────────────────────────────────────────────────
     logger.info("Loading challenges from %s", challenges_path)
@@ -277,37 +425,63 @@ def run_pipeline(
 
     all_results: dict[str, SolverResult] = {}
 
-    # ── Tier 1: DSA (parallel) ─────────────────────────────────────
-    t1_budget = min(300.0, _remaining() * 0.05)
-    t1 = run_tier1(tasks, set(), REGISTRY, total_budget_s=t1_budget, per_task_s=5.0)
-    all_results.update(t1)
-    solved = set(all_results.keys())
-    logger.info("After T1: %d/%d (%.1f%%)", len(solved), len(tasks), 100 * len(solved) / len(tasks))
-
-    # ── Tier 2: Program Synthesis ──────────────────────────────────
-    if not skip_tier2 and _remaining() > 60:
+    # ── Stage 3: LLM + TTT ────────────────────────────────────────
+    # skip_tier2/tier3 flags (legacy) also suppress Stage 3 sub-stages
+    _skip_s3 = skip_stage3 or (skip_tier2 and skip_tier3)
+    if not _skip_s3 and _remaining() > 60:
         llm = build_engine(model_path=model_path, server_url=server_url)
-        budget2 = min(_remaining() * 0.40, 7200.0)
-        n_unsolved = len(tasks) - len(solved)
-        per_t2 = max(10.0, min(45.0, budget2 / max(n_unsolved, 1)))
-        t2 = run_tier2(tasks, solved, llm, time_budget_s=budget2, per_task_s=per_t2)
-        all_results.update(t2)
-        solved = set(all_results.keys())
-        logger.info("After T2: %d/%d (%.1f%%)", len(solved), len(tasks), 100 * len(solved) / len(tasks))
+        s3_budget = min(_remaining() * 0.60, 10800.0)
+        s3 = run_stage3(
+            tasks,
+            set(all_results),
+            llm,
+            time_budget_s=s3_budget,
+            skip_ttt=False,
+            skip_chakra=skip_tier3,
+            skip_progsynth=skip_tier2,
+        )
+        all_results.update(s3)
+        solved = set(all_results)
+        logger.info(
+            "After Stage-3: %d/%d (%.1f%%)",
+            len(solved), len(tasks), 100 * len(solved) / len(tasks),
+        )
     else:
         llm = None
 
-    # ── Tier 3: Chakra Ensemble ────────────────────────────────────
-    if not skip_tier3 and _remaining() > 60:
-        if llm is None:
-            llm = build_engine(model_path=model_path, server_url=server_url)
-        budget3 = _remaining()
-        n_unsolved = len(tasks) - len(solved)
-        per_t3 = max(20.0, min(90.0, budget3 / max(n_unsolved, 1)))
-        t3 = run_tier3(tasks, solved, llm, time_budget_s=budget3, per_task_s=per_t3)
-        all_results.update(t3)
-        solved = set(all_results.keys())
-        logger.info("After T3: %d/%d (%.1f%%)", len(solved), len(tasks), 100 * len(solved) / len(tasks))
+    # ── Stage 2: Pattern Induction ────────────────────────────────
+    if not skip_stage2 and _remaining() > 30:
+        s2_budget = min(_remaining() * 0.70, 4500.0)   # 70% of what's left
+        s2 = run_stage2(
+            tasks,
+            set(all_results),
+            REGISTRY,
+            total_budget_s=s2_budget,
+            per_task_s=8.0,
+        )
+        all_results.update(s2)
+        solved = set(all_results)
+        logger.info(
+            "After Stage-2: %d/%d (%.1f%%)",
+            len(solved), len(tasks), 100 * len(solved) / len(tasks),
+        )
+
+    # ── Stage 1: Deterministic fallback ───────────────────────────
+    if not skip_stage1 and _remaining() > 10:
+        s1_budget = min(_remaining(), 300.0)
+        s1 = run_stage1(
+            tasks,
+            set(all_results),
+            REGISTRY,
+            total_budget_s=s1_budget,
+            per_task_s=5.0,
+        )
+        all_results.update(s1)
+        solved = set(all_results)
+        logger.info(
+            "After Stage-1: %d/%d (%.1f%%)",
+            len(solved), len(tasks), 100 * len(solved) / len(tasks),
+        )
 
     # ── Build & write submission ───────────────────────────────────
     submission = build_submission(tasks, all_results, fallback_input=True)
@@ -320,5 +494,7 @@ def run_pipeline(
         logger.info("Score vs ground truth: %.2f%%", acc * 100)
 
     total_elapsed = time.perf_counter() - wall_start
-    logger.info("Pipeline done in %.1fs (%.2fh)", total_elapsed, total_elapsed / 3600)
+    logger.info(
+        "Pipeline done in %.1fs (%.2fh)", total_elapsed, total_elapsed / 3600
+    )
     return submission

@@ -3773,6 +3773,9 @@ class InvBlockOnZeroSolver(BaseSolver):
             eH, eW = _dims(exp)
             if eH != 3*H or eW != 3*W:
                 return None
+            # tiling formula requires H==3 (stride H fills exactly 3H rows)
+            if H != 3 or W != 3:
+                return None
             fg_colors = set(v for r in inp for v in r if v != 0)
             if len(fg_colors) != 1:
                 return None
@@ -3826,6 +3829,9 @@ class CopyBlockOnBgSolver(BaseSolver):
             return None
         k = eH0 // H0
         if eW0 != k * W0:
+            return None
+        # tiling formula uses stride H; requires k == H (fractal: H×H tiles in H×H grid)
+        if k != H0:
             return None
         for pair in pairs:
             inp, exp = pair["input"], pair["output"]
@@ -3890,6 +3896,9 @@ class RarestColorBlockSolver(BaseSolver):
         if H0 == 0 or eH0 % H0 != 0 or eW0 != (eH0 // H0) * W0:
             return None
         k = eH0 // H0
+        # tiling formula uses stride H; requires k == H (fractal: H×H tiles in H×H grid)
+        if k != H0:
+            return None
         # validate all pairs
         for pair in pairs:
             inp, exp = pair["input"], pair["output"]
@@ -6477,6 +6486,1337 @@ class ContinueDiagonalSeqSolver(BaseSolver):
         preds = []
         for inp in ctx.test_inputs:
             g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p117 — DiagonalShiftSolver — task 025d127b
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class DiagonalShiftSolver(BaseSolver):
+    """p117 — task 025d127b: parallelogram outlines; bottom row anchored;
+    all other rows shift each cell rightward to min(c+1, bottom_right_col)."""
+
+    @property
+    def name(self) -> str:
+        return "DiagonalShiftSolver"
+
+    @property
+    def priority(self) -> int:
+        return 117
+
+    def _connected_components_8(self, grid):
+        H, W = len(grid), len(grid[0])
+        visited = [[False] * W for _ in range(H)]
+        components = []
+        for sr in range(H):
+            for sc in range(W):
+                if grid[sr][sc] != 0 and not visited[sr][sc]:
+                    color = grid[sr][sc]
+                    stack = [(sr, sc)]
+                    cells = []
+                    while stack:
+                        r, c = stack.pop()
+                        if r < 0 or r >= H or c < 0 or c >= W:
+                            continue
+                        if visited[r][c]:
+                            continue
+                        if grid[r][c] != color:
+                            continue
+                        visited[r][c] = True
+                        cells.append((r, c))
+                        for dr in [-1, 0, 1]:
+                            for dc in [-1, 0, 1]:
+                                if dr == 0 and dc == 0:
+                                    continue
+                                stack.append((r + dr, c + dc))
+                    components.append((color, cells))
+        return components
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        out = [[0] * W for _ in range(H)]
+        components = self._connected_components_8(inp)
+        for color, cells in components:
+            bottom_row = max(r for r, c in cells)
+            bottom_cells = [(r, c) for r, c in cells if r == bottom_row]
+            bottom_right_col = max(c for r, c in bottom_cells)
+            for r, c in cells:
+                if r == bottom_row:
+                    out[r][c] = color
+                else:
+                    new_c = min(c + 1, bottom_right_col)
+                    out[r][new_c] = color
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p118 — GridCellConnectSolver — task 06df4c85
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class GridCellConnectSolver(BaseSolver):
+    """p118 — task 06df4c85: separator lines divide grid into cells;
+    cells with 2×2 same-color block; connect same-color endpoints
+    horizontally (same row-band) or vertically (same col-band)."""
+
+    @property
+    def name(self) -> str:
+        return "GridCellConnectSolver"
+
+    @property
+    def priority(self) -> int:
+        return 118
+
+    def _find_separators(self, grid):
+        """Return sorted lists of separator row indices and separator col indices."""
+        H, W = len(grid), len(grid[0])
+        sep_rows = []
+        sep_cols = []
+        for r in range(H):
+            row_vals = set(grid[r])
+            if len(row_vals) == 1 and list(row_vals)[0] != 0:
+                sep_rows.append(r)
+        for c in range(W):
+            col_vals = set(grid[r][c] for r in range(H))
+            if len(col_vals) == 1 and list(col_vals)[0] != 0:
+                sep_cols.append(c)
+        return sep_rows, sep_cols
+
+    def _get_cell_bands(self, sep_indices, total_size):
+        """Return list of (start, end) inclusive ranges for each cell band."""
+        bands = []
+        prev = 0
+        for s in sep_indices:
+            if s > prev:
+                bands.append((prev, s - 1))
+            prev = s + 1
+        if prev < total_size:
+            bands.append((prev, total_size - 1))
+        return bands
+
+    def _cell_color(self, grid, r_start, r_end, c_start, c_end):
+        """Return the non-zero color occupying this cell interior, or None."""
+        colors = set()
+        for r in range(r_start, r_end + 1):
+            for c in range(c_start, c_end + 1):
+                v = grid[r][c]
+                if v != 0:
+                    colors.add(v)
+        if len(colors) == 1:
+            return list(colors)[0]
+        return None
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        sep_rows, sep_cols = self._find_separators(inp)
+        if not sep_rows and not sep_cols:
+            return None
+        row_bands = self._get_cell_bands(sep_rows, H)
+        col_bands = self._get_cell_bands(sep_cols, W)
+        if not row_bands or not col_bands:
+            return None
+
+        # Build cell color map: (rb_idx, cb_idx) -> color or None
+        cell_map = {}
+        for rb_idx, (r0, r1) in enumerate(row_bands):
+            for cb_idx, (c0, c1) in enumerate(col_bands):
+                color = self._cell_color(inp, r0, r1, c0, c1)
+                if color is not None:
+                    cell_map[(rb_idx, cb_idx)] = color
+
+        # For each color, find all (rb, cb) positions
+        from collections import defaultdict
+        color_positions = defaultdict(list)
+        for (rb, cb), color in cell_map.items():
+            color_positions[color].append((rb, cb))
+
+        # Build output as copy of input
+        out = [list(row) for row in inp]
+
+        for color, positions in color_positions.items():
+            if len(positions) < 2:
+                continue
+            # Pair-wise: for every pair of same-color cells, fill if they
+            # share a row-band (horizontal) or col-band (vertical).
+            for i in range(len(positions)):
+                for j in range(i + 1, len(positions)):
+                    rb1, cb1 = positions[i]
+                    rb2, cb2 = positions[j]
+                    if rb1 == rb2:
+                        # Same row-band → horizontal fill between col-bands
+                        min_cb = min(cb1, cb2)
+                        max_cb = max(cb1, cb2)
+                        r0, r1 = row_bands[rb1]
+                        for cb_idx in range(min_cb, max_cb + 1):
+                            c0, c1 = col_bands[cb_idx]
+                            for r in range(r0, r1 + 1):
+                                for c in range(c0, c1 + 1):
+                                    out[r][c] = color
+                    elif cb1 == cb2:
+                        # Same col-band → vertical fill between row-bands
+                        min_rb = min(rb1, rb2)
+                        max_rb = max(rb1, rb2)
+                        c0, c1 = col_bands[cb1]
+                        for rb_idx in range(min_rb, max_rb + 1):
+                            r0, r1 = row_bands[rb_idx]
+                            for r in range(r0, r1 + 1):
+                                for c in range(c0, c1 + 1):
+                                    out[r][c] = color
+                    # else: different row-band AND col-band → no fill
+
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p119 — MoveShapeToAdjacentSolver — task 05f2a901
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class MoveShapeToAdjacentSolver(BaseSolver):
+    """p119 — task 05f2a901: move color-2 shape toward color-8 shape
+    until they are directly adjacent (gap = 0); direction determined by
+    which dimension has clear separation between the two bounding boxes."""
+
+    @property
+    def name(self) -> str:
+        return "MoveShapeToAdjacentSolver"
+
+    @property
+    def priority(self) -> int:
+        return 119
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        cells_2 = [(r, c) for r in range(H) for c in range(W) if inp[r][c] == 2]
+        cells_8 = [(r, c) for r in range(H) for c in range(W) if inp[r][c] == 8]
+        if not cells_2 or not cells_8:
+            return None
+
+        r2_min = min(r for r, c in cells_2)
+        r2_max = max(r for r, c in cells_2)
+        c2_min = min(c for r, c in cells_2)
+        c2_max = max(c for r, c in cells_2)
+        r8_min = min(r for r, c in cells_8)
+        r8_max = max(r for r, c in cells_8)
+        c8_min = min(c for r, c in cells_8)
+        c8_max = max(c for r, c in cells_8)
+
+        shift_r, shift_c = 0, 0
+        # Determine direction from separation
+        if c2_max < c8_min:       # 2 is left of 8 → move right
+            shift_c = c8_min - 1 - c2_max
+        elif c2_min > c8_max:     # 2 is right of 8 → move left
+            shift_c = -(c2_min - c8_max - 1)
+        elif r2_max < r8_min:     # 2 is above 8 → move down
+            shift_r = r8_min - 1 - r2_max
+        elif r2_min > r8_max:     # 2 is below 8 → move up
+            shift_r = -(r2_min - r8_max - 1)
+        else:
+            return None  # no clear separation
+
+        out = [list(row) for row in inp]
+        # Remove original 2-shape
+        for r, c in cells_2:
+            out[r][c] = 0
+        # Place shifted 2-shape
+        for r, c in cells_2:
+            nr, nc = r + shift_r, c + shift_c
+            if 0 <= nr < H and 0 <= nc < W:
+                out[nr][nc] = 2
+            else:
+                return None  # out of bounds
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p120 — TileDiagonalMarkSolver — task 10fcaaa3
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class TileDiagonalMarkSolver(BaseSolver):
+    """p120 — task 10fcaaa3: tile the input grid 2×2 (double H and W),
+    then mark all diagonal neighbors of every non-zero cell with 8
+    (only if the neighbor cell is currently 0)."""
+
+    @property
+    def name(self) -> str:
+        return "TileDiagonalMarkSolver"
+
+    @property
+    def priority(self) -> int:
+        return 120
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        # Build 2H × 2W tiled grid
+        tiled = []
+        for _ in range(2):
+            for row in inp:
+                tiled.append(list(row) * 2)
+        TH, TW = 2 * H, 2 * W
+        # Mark diagonal neighbors of non-zero cells with 8
+        out = [list(row) for row in tiled]
+        for r in range(TH):
+            for c in range(TW):
+                if tiled[r][c] != 0:
+                    for dr in [-1, 1]:
+                        for dc in [-1, 1]:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < TH and 0 <= nc < TW and tiled[nr][nc] == 0:
+                                out[nr][nc] = 8
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p121 — CrossDotMarkSolver — task 0ca9ddb6
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class CrossDotMarkSolver(BaseSolver):
+    """p121 — task 0ca9ddb6: color 2 gets 4s placed at its 4 diagonal
+    neighbors; color 1 gets 7s placed at its 4 cross (cardinal) neighbors;
+    all other colors stay unchanged."""
+
+    @property
+    def name(self) -> str:
+        return "CrossDotMarkSolver"
+
+    @property
+    def priority(self) -> int:
+        return 121
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        out = [list(row) for row in inp]
+        for r in range(H):
+            for c in range(W):
+                v = inp[r][c]
+                if v == 2:
+                    for dr in [-1, 1]:
+                        for dc in [-1, 1]:
+                            nr, nc = r + dr, c + dc
+                            if 0 <= nr < H and 0 <= nc < W and inp[nr][nc] == 0:
+                                out[nr][nc] = 4
+                elif v == 1:
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        nr, nc = r + dr, c + dc
+                        if 0 <= nr < H and 0 <= nc < W and inp[nr][nc] == 0:
+                            out[nr][nc] = 7
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p122 — CompleteRotationalSymmetrySolver — task 11852cab
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class CompleteRotationalSymmetrySolver(BaseSolver):
+    """p122 — task 11852cab: complete 4-fold 90° rotational symmetry.
+    Find all non-zero cells, compute centroid (rounded mean row/col),
+    for each cell rotate its offset 3× by 90° CW and fill empty slots."""
+
+    @property
+    def name(self) -> str:
+        return "CompleteRotationalSymmetrySolver"
+
+    @property
+    def priority(self) -> int:
+        return 122
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        cells = [(r, c, inp[r][c])
+                 for r in range(H) for c in range(W) if inp[r][c] != 0]
+        if not cells:
+            return None
+        cr = round(sum(r for r, c, v in cells) / len(cells))
+        cc = round(sum(c for r, c, v in cells) / len(cells))
+        out = [list(row) for row in inp]
+        for r, c, v in cells:
+            dr, dc = r - cr, c - cc
+            for _ in range(3):
+                dr, dc = dc, -dr   # 90° CW rotation
+                nr, nc = cr + dr, cc + dc
+                if 0 <= nr < H and 0 <= nc < W:
+                    if out[nr][nc] == 0:
+                        out[nr][nc] = v
+                    elif out[nr][nc] != v:
+                        return None   # colour conflict
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p123 — ShapeMirrorMeetSolver — task 11dc524f
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class ShapeMirrorMeetSolver(BaseSolver):
+    """p123 — task 11dc524f: background=7. A 2-shape moves toward a 2×2
+    5-shape until adjacent; the 5-shape morphs into the mirror of the
+    2-shape (horizontal mirror for left/right moves, vertical for up/down)
+    placed adjacent on the far side."""
+
+    @property
+    def name(self) -> str:
+        return "ShapeMirrorMeetSolver"
+
+    @property
+    def priority(self) -> int:
+        return 123
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        BG = 7
+        cells2 = [(r, c) for r in range(H) for c in range(W) if inp[r][c] == 2]
+        cells5 = [(r, c) for r in range(H) for c in range(W) if inp[r][c] == 5]
+        if not cells2 or not cells5:
+            return None
+
+        r2_min = min(r for r, c in cells2); r2_max = max(r for r, c in cells2)
+        c2_min = min(c for r, c in cells2); c2_max = max(c for r, c in cells2)
+        r5_min = min(r for r, c in cells5); r5_max = max(r for r, c in cells5)
+        c5_min = min(c for r, c in cells5); c5_max = max(c for r, c in cells5)
+
+        # determine direction of 2 relative to 5
+        if c2_max < c5_min:
+            direction = "right"
+            shift_r, shift_c = 0, c5_min - 1 - c2_max
+        elif c2_min > c5_max:
+            direction = "left"
+            shift_r, shift_c = 0, (c5_max + 1) - c2_min
+        elif r2_max < r5_min:
+            direction = "down"
+            shift_r, shift_c = r5_min - 1 - r2_max, 0
+        elif r2_min > r5_max:
+            direction = "up"
+            shift_r, shift_c = (r5_max + 1) - r2_min, 0
+        else:
+            return None
+
+        # moved 2-shape absolute positions
+        new2 = [(r + shift_r, c + shift_c) for r, c in cells2]
+        new_r2_min = r2_min + shift_r; new_r2_max = r2_max + shift_r
+        new_c2_min = c2_min + shift_c; new_c2_max = c2_max + shift_c
+
+        h2 = r2_max - r2_min; w2 = c2_max - c2_min
+
+        # offsets of 2-shape relative to its bounding-box origin
+        offsets2 = [(r - r2_min, c - c2_min) for r, c in cells2]
+
+        # mirror the offsets
+        if direction in ("right", "left"):
+            mirror_off = [(dr, w2 - dc) for dr, dc in offsets2]
+        else:
+            mirror_off = [(h2 - dr, dc) for dr, dc in offsets2]
+
+        # place the mirrored 5-shape (adjacent on far side)
+        if direction == "right":
+            base_r, base_c = new_r2_min, new_c2_max + 1
+        elif direction == "left":
+            base_r, base_c = new_r2_min, new_c2_min - 1 - w2
+        elif direction == "down":
+            base_r, base_c = new_r2_max + 1, new_c2_min
+        else:  # up
+            base_r, base_c = new_r2_min - 1 - h2, new_c2_min
+
+        new5 = [(base_r + dr, base_c + dc) for dr, dc in mirror_off]
+
+        # build output
+        out = [[BG] * W for _ in range(H)]
+        for r, c in new2:
+            if not (0 <= r < H and 0 <= c < W):
+                return None
+            out[r][c] = 2
+        for r, c in new5:
+            if not (0 <= r < H and 0 <= c < W):
+                return None
+            out[r][c] = 5
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ─────────────────────────────────────────────────────────────────
+# p124 — ThreeDotsLConnectorSolver — task 0e671a1a
+# ─────────────────────────────────────────────────────────────────
+@register_solver
+class ThreeDotsLConnectorSolver(BaseSolver):
+    """p124 — task 0e671a1a: three colored dots (4, 3, 2) on an empty grid.
+    Draw two L-shaped paths of 5s:
+      4→3: corner at (r4, c3) — horizontal then vertical
+      4→2: corner at (r2, c4) — vertical then horizontal
+    Original dot cells stay unchanged."""
+
+    @property
+    def name(self) -> str:
+        return "ThreeDotsLConnectorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 124
+
+    def _draw_L(self, out, r_start, c_start, r_end, c_end, corner):
+        """Draw 5s from (r_start,c_start) to corner, then to (r_end,c_end).
+        Excludes the start cell and the end cell."""
+        H, W = len(out), len(out[0])
+        cr, cc = corner
+        # segment 1: start → corner (inclusive)
+        if r_start == cr:
+            step = 1 if cc > c_start else -1
+            for c in range(c_start + step, cc + step, step):
+                if 0 <= r_start < H and 0 <= c < W and out[r_start][c] == 0:
+                    out[r_start][c] = 5
+        else:
+            step = 1 if cr > r_start else -1
+            for r in range(r_start + step, cr + step, step):
+                if 0 <= r < H and 0 <= c_start < W and out[r][c_start] == 0:
+                    out[r][c_start] = 5
+        # segment 2: corner → end (exclusive of end)
+        if cr == r_end:
+            step = 1 if c_end > cc else -1
+            for c in range(cc + step, c_end, step):
+                if 0 <= cr < H and 0 <= c < W and out[cr][c] == 0:
+                    out[cr][c] = 5
+        else:
+            step = 1 if r_end > cr else -1
+            for r in range(cr + step, r_end, step):
+                if 0 <= r < H and 0 <= cc < W and out[r][cc] == 0:
+                    out[r][cc] = 5
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        pos = {}
+        for r in range(H):
+            for c in range(W):
+                v = inp[r][c]
+                if v in (2, 3, 4):
+                    pos[v] = (r, c)
+        if set(pos.keys()) != {2, 3, 4}:
+            return None
+        r4, c4 = pos[4]; r3, c3 = pos[3]; r2, c2 = pos[2]
+        out = [list(row) for row in inp]
+        C1 = (r4, c3)   # corner for 4→3
+        C2 = (r2, c4)   # corner for 4→2
+        self._draw_L(out, r4, c4, r3, c3, C1)
+        self._draw_L(out, r4, c4, r2, c2, C2)
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# p125 – ConnectPairsLineSolver  (task 070dd51e)
+# Each color appears exactly twice. Same row → horizontal line; same col →
+# vertical line. Horizontal lines drawn first; vertical lines drawn on top.
+# ---------------------------------------------------------------------------
+@register_solver
+class ConnectPairsLineSolver(BaseSolver):
+    name = "ConnectPairsLineSolver"
+
+    @property
+    def priority(self) -> int:
+        return 125
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        # collect positions per color (ignore 0)
+        from collections import defaultdict
+        pos = defaultdict(list)
+        for r in range(H):
+            for c in range(W):
+                v = inp[r][c]
+                if v != 0:
+                    pos[v].append((r, c))
+        # every color must appear exactly twice
+        if not pos:
+            return None
+        for v, pts in pos.items():
+            if len(pts) != 2:
+                return None
+        out = [list(row) for row in inp]
+        # pass 1: horizontal lines
+        for v, pts in pos.items():
+            (r1, c1), (r2, c2) = pts
+            if r1 == r2:
+                for c in range(min(c1, c2), max(c1, c2) + 1):
+                    out[r1][c] = v
+        # pass 2: vertical lines (override crossings)
+        for v, pts in pos.items():
+            (r1, c1), (r2, c2) = pts
+            if c1 == c2:
+                for r in range(min(r1, r2), max(r1, r2) + 1):
+                    out[r][c1] = v
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# ---------------------------------------------------------------------------
+# p126 – FiveDividerBlockFillSolver  (task 09629e4f)
+# 11×11 grid; rows/cols of 5s divide it into a 3×3 meta-grid of 3×3 blocks.
+# One block is "deficient" (4 non-zero values, missing 8). For each non-zero
+# value V at local position (lr, lc) in the deficient block, the output fills
+# meta-grid block (lr, lc) entirely with V; all other blocks become 0.
+# ---------------------------------------------------------------------------
+@register_solver
+class FiveDividerBlockFillSolver(BaseSolver):
+    name = "FiveDividerBlockFillSolver"
+
+    @property
+    def priority(self) -> int:
+        return 126
+
+    def _get_dividers(self, grid):
+        H, W = len(grid), len(grid[0])
+        div_rows = [r for r in range(H) if all(grid[r][c] == 5 for c in range(W))]
+        div_cols = [c for c in range(W) if all(grid[r][c] == 5 for r in range(H))]
+        return div_rows, div_cols
+
+    def _block_ranges(self, div_lines, total):
+        """Return list of (start, end) row/col ranges for each block strip."""
+        ranges = []
+        prev = 0
+        for d in div_lines:
+            if d > prev:
+                ranges.append((prev, d))
+            prev = d + 1
+        if prev < total:
+            ranges.append((prev, total))
+        return ranges
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        div_rows, div_cols = self._get_dividers(inp)
+        if len(div_rows) != 2 or len(div_cols) != 2:
+            return None
+        row_ranges = self._block_ranges(div_rows, H)
+        col_ranges = self._block_ranges(div_cols, W)
+        if len(row_ranges) != 3 or len(col_ranges) != 3:
+            return None
+
+        # Extract each 3×3 block's non-zero values and positions
+        blocks = {}
+        for br in range(3):
+            for bc in range(3):
+                rs, re = row_ranges[br]
+                cs, ce = col_ranges[bc]
+                vals = {}
+                for lr in range(re - rs):
+                    for lc in range(ce - cs):
+                        v = inp[rs + lr][cs + lc]
+                        if v != 0 and v != 5:
+                            vals[(lr, lc)] = v
+                blocks[(br, bc)] = vals
+
+        # Find deficient block: exactly 4 non-zero values
+        deficient = None
+        for key, vals in blocks.items():
+            if len(vals) == 4:
+                if deficient is not None:
+                    return None  # ambiguous
+                deficient = key
+        if deficient is None:
+            return None
+
+        def_vals = blocks[deficient]
+
+        # Build output grid
+        out = [[0] * W for _ in range(H)]
+        # Fill divider rows/cols with 5
+        for dr in div_rows:
+            for c in range(W):
+                out[dr][c] = 5
+        for dc in div_cols:
+            for r in range(H):
+                out[r][dc] = 5
+
+        # For each (lr, lc) -> V in deficient block, fill meta-block (lr, lc) with V
+        for (lr, lc), V in def_vals.items():
+            rs, re = row_ranges[lr]
+            cs, ce = col_ranges[lc]
+            for r in range(rs, re):
+                for c in range(cs, ce):
+                    out[r][c] = V
+
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class FiveAnchorPlacementSolver(BaseSolver):
+    """p127 — task 137eaa0f
+    Output is a 3x3 grid. Each 5 in the 11x11 input is an anchor at (r5,c5).
+    Each non-0 non-5 cell (r,c) with value V is 8-adjacent to exactly one anchor.
+    Place V at output position (1+(r-r5), 1+(c-c5)). Center (1,1) = 5.
+    """
+    name = "FiveAnchorPlacementSolver"
+
+    @property
+    def priority(self) -> int:
+        return 127
+
+    def _apply(self, grid):
+        H, W = len(grid), len(grid[0])
+        anchors = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 5]
+        out = [[0] * 3 for _ in range(3)]
+        out[1][1] = 5
+        for r in range(H):
+            for c in range(W):
+                v = grid[r][c]
+                if v == 0 or v == 5:
+                    continue
+                # find adjacent anchor
+                adj = [(r5, c5) for (r5, c5) in anchors if abs(r - r5) <= 1 and abs(c - c5) <= 1 and (r5, c5) != (r, c)]
+                if len(adj) != 1:
+                    return None
+                r5, c5 = adj[0]
+                dr, dc = r - r5, c - c5
+                or_, oc_ = 1 + dr, 1 + dc
+                if not (0 <= or_ < 3 and 0 <= oc_ < 3):
+                    return None
+                out[or_][oc_] = v
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class CrossExpandSolver(BaseSolver):
+    """p128 — task 0962bcdd
+    Find each cross: center C, 4 cardinal neighbors all = A (A != C).
+    Expand to a 5x5 block at that position:
+      origin(0,0)=C; axis cells (dr=0 or dc=0, not origin)=A;
+      diagonal cells (|dr|=|dc|!=0)=C; else 0.
+    """
+    name = "CrossExpandSolver"
+
+    @property
+    def priority(self) -> int:
+        return 128
+
+    def _find_crosses(self, grid):
+        H, W = len(grid), len(grid[0])
+        crosses = []
+        for r in range(1, H - 1):
+            for c in range(1, W - 1):
+                C = grid[r][c]
+                neighbors = [grid[r-1][c], grid[r+1][c], grid[r][c-1], grid[r][c+1]]
+                if len(set(neighbors)) == 1 and neighbors[0] != C and neighbors[0] != 0:
+                    crosses.append((r, c, C, neighbors[0]))
+        return crosses
+
+    def _build_5x5(self, C, A):
+        block = []
+        for dr in range(-2, 3):
+            row = []
+            for dc in range(-2, 3):
+                if dr == 0 and dc == 0:
+                    row.append(C)
+                elif dr == 0 or dc == 0:
+                    row.append(A)
+                elif abs(dr) == abs(dc):
+                    row.append(C)
+                else:
+                    row.append(0)
+            block.append(row)
+        return block
+
+    def _apply(self, grid):
+        crosses = self._find_crosses(grid)
+        if not crosses:
+            return None
+        H, W = len(grid), len(grid[0])
+        out = [[0] * W for _ in range(H)]
+        for (r, c, C, A) in crosses:
+            block = self._build_5x5(C, A)
+            for dr in range(-2, 3):
+                for dc in range(-2, 3):
+                    nr, nc = r + dr, c + dc
+                    if 0 <= nr < H and 0 <= nc < W:
+                        out[nr][nc] = block[dr + 2][dc + 2]
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class ShapeColorReplicationSolver(BaseSolver):
+    """p129 — task 12997ef3
+    Input has a '1-template shape' (cells of value 1) and N color markers
+    (non-0 non-1 cells). If markers share the same row → replicate the shape
+    horizontally N times, each colored by its marker's value (sorted by col).
+    If markers share the same column → stack N replicas vertically (sorted by row).
+    """
+    name = "ShapeColorReplicationSolver"
+
+    @property
+    def priority(self) -> int:
+        return 129
+
+    def _apply(self, grid):
+        H, W = len(grid), len(grid[0])
+        template = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 1]
+        markers = [(r, c, grid[r][c]) for r in range(H) for c in range(W)
+                   if grid[r][c] != 0 and grid[r][c] != 1]
+        if not template or not markers:
+            return None
+
+        marker_rows = set(r for r, c, v in markers)
+        marker_cols = set(c for r, c, v in markers)
+
+        t_rows = [r for r, c in template]
+        t_cols = [c for r, c in template]
+        tr_min, tr_max = min(t_rows), max(t_rows)
+        tc_min, tc_max = min(t_cols), max(t_cols)
+        t_h = tr_max - tr_min + 1
+        t_w = tc_max - tc_min + 1
+
+        if len(marker_rows) == 1:
+            # horizontal replication
+            markers_sorted = sorted(markers, key=lambda x: x[1])
+            N = len(markers_sorted)
+            out_h = t_h
+            out_w = t_w * N
+            out = [[0] * out_w for _ in range(out_h)]
+            for i, (mr, mc, color) in enumerate(markers_sorted):
+                for (r, c) in template:
+                    nr = r - tr_min
+                    nc = (c - tc_min) + i * t_w
+                    out[nr][nc] = color
+            return out
+        elif len(marker_cols) == 1:
+            # vertical replication
+            markers_sorted = sorted(markers, key=lambda x: x[0])
+            N = len(markers_sorted)
+            out_h = t_h * N
+            out_w = t_w
+            out = [[0] * out_w for _ in range(out_h)]
+            for i, (mr, mc, color) in enumerate(markers_sorted):
+                for (r, c) in template:
+                    nr = (r - tr_min) + i * t_h
+                    nc = c - tc_min
+                    out[nr][nc] = color
+            return out
+        else:
+            return None
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class QuadrantShapeAssembleSolver(BaseSolver):
+    """Task 0bb8deee – split by divider row+col into 4 quadrants, extract each
+    shape's bounding box, assemble 2×2 in the output."""
+    name = "QuadrantShapeAssembleSolver"
+    priority = 130
+
+    def _apply(self, grid):
+        H = len(grid); W = len(grid[0])
+        dr = None; dv = None
+        for r in range(H):
+            row = grid[r]
+            if len(set(row)) == 1 and row[0] != 0:
+                dr = r; dv = row[0]; break
+        if dr is None:
+            return None
+        dc = None
+        for c in range(W):
+            if all(grid[r][c] == dv for r in range(H)):
+                dc = c; break
+        if dc is None:
+            return None
+        quads = [
+            (0, dr, 0, dc), (0, dr, dc+1, W),
+            (dr+1, H, 0, dc), (dr+1, H, dc+1, W),
+        ]
+        shapes = []
+        for (r0, r1, c0, c1) in quads:
+            cells = [(r-r0, c-c0, grid[r][c])
+                     for r in range(r0, r1) for c in range(c0, c1)
+                     if grid[r][c] != 0]
+            if not cells:
+                return None
+            min_r = min(r for r, c, v in cells)
+            max_r = max(r for r, c, v in cells)
+            min_c = min(c for r, c, v in cells)
+            max_c = max(c for r, c, v in cells)
+            sh = max_r - min_r + 1; sw = max_c - min_c + 1
+            shape = [[0] * sw for _ in range(sh)]
+            for (r, c, v) in cells:
+                shape[r - min_r][c - min_c] = v
+            shapes.append((sh, sw, shape))
+        if len(set((sh, sw) for sh, sw, _ in shapes)) != 1:
+            return None
+        sh, sw, _ = shapes[0]
+        out = [[0] * (sw * 2) for _ in range(sh * 2)]
+        for (r_off, c_off), (_, _, shape) in zip(
+                [(0, 0), (0, sw), (sh, 0), (sh, sw)], shapes):
+            for r in range(sh):
+                for c in range(sw):
+                    out[r_off + r][c_off + c] = shape[r][c]
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class FiveCountRepeatSolver(BaseSolver):
+    """Task 12422b43 – count leading 5s in col0 → period N; template = those N
+    rows with col0 zeroed; fill empty tail rows cyclically with template."""
+    name = "FiveCountRepeatSolver"
+    priority = 131
+
+    def _apply(self, grid):
+        H = len(grid); W = len(grid[0])
+        N = 0
+        for r in range(H):
+            if grid[r][0] == 5:
+                N += 1
+            else:
+                break
+        if N == 0:
+            return None
+        template = []
+        for r in range(N):
+            row = list(grid[r]); row[0] = 0; template.append(row)
+        K = -1
+        for r in range(H):
+            if any(v != 0 for v in grid[r]):
+                K = r
+        if K == -1:
+            return None
+        out = []
+        for r in range(H):
+            if r <= K:
+                out.append(list(grid[r]))
+            else:
+                out.append(list(template[(r - (K + 1)) % N]))
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+@register_solver
+class SquareCornerMarkerSolver(BaseSolver):
+    """Task 14b8e18c – find CCs whose bounding box is square (side≥2) with all
+    perimeter cells filled; place 2 just outside each of the 4 corners in the
+    two axis directions (not diagonal)."""
+    name = "SquareCornerMarkerSolver"
+    priority = 132
+
+    def _apply(self, grid):
+        from collections import Counter
+        H = len(grid); W = len(grid[0])
+        bg = Counter(v for row in grid for v in row).most_common(1)[0][0]
+        visited = [[False] * W for _ in range(H)]
+        out = [list(row) for row in grid]
+        for sr in range(H):
+            for sc in range(W):
+                if visited[sr][sc] or grid[sr][sc] == bg:
+                    visited[sr][sc] = True
+                    continue
+                color = grid[sr][sc]
+                cells = []
+                queue = [(sr, sc)]
+                local_vis = set()
+                while queue:
+                    r, c = queue.pop(0)
+                    if (r, c) in local_vis:
+                        continue
+                    if not (0 <= r < H and 0 <= c < W):
+                        continue
+                    if grid[r][c] != color:
+                        continue
+                    local_vis.add((r, c))
+                    cells.append((r, c))
+                    for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                        queue.append((r + dr, c + dc))
+                for (r, c) in cells:
+                    visited[r][c] = True
+                r0 = min(r for r, c in cells)
+                r1 = max(r for r, c in cells)
+                c0 = min(c for r, c in cells)
+                c1 = max(c for r, c in cells)
+                h = r1 - r0 + 1; w = c1 - c0 + 1
+                if h != w or h < 2:
+                    continue
+                cell_set = set(cells)
+                valid = True
+                for r in range(r0, r1 + 1):
+                    for c in range(c0, c1 + 1):
+                        if r == r0 or r == r1 or c == c0 or c == c1:
+                            if (r, c) not in cell_set:
+                                valid = False; break
+                    if not valid:
+                        break
+                if not valid:
+                    continue
+                corner_offsets = [
+                    ((r0, c0), [(-1, 0), (0, -1)]),
+                    ((r0, c1), [(-1, 0), (0,  1)]),
+                    ((r1, c0), [( 1, 0), (0, -1)]),
+                    ((r1, c1), [( 1, 0), (0,  1)]),
+                ]
+                for (cr, cc), offsets in corner_offsets:
+                    for (dr, dc) in offsets:
+                        nr, nc = cr + dr, cc + dc
+                        if 0 <= nr < H and 0 <= nc < W:
+                            out[nr][nc] = 2
+        return out
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            exp = self._apply(pair["input"])
+            if exp is None:
+                return None
+            if exp != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(_mk(g, self.name))
+        return _res(ctx.task_id, preds)
+
+
+# p133 – HorizontalBandSolver  (task 0f63c0b9)
+# Markers define horizontal bands; zone boundary = midpoint of consecutive marker rows.
+# Each zone: marker row + grid edges (row 0, H-1) fully filled; other rows only col 0 & W-1.
+
+@register_solver
+class HorizontalBandSolver(BaseSolver):
+    name = "HorizontalBandSolver"
+
+    def _solve_grid(self, grid):
+        H, W = len(grid), len(grid[0])
+        markers = []
+        for r in range(H):
+            for c in range(W):
+                if grid[r][c] != 0:
+                    markers.append((r, grid[r][c]))
+        markers.sort()
+        n = len(markers)
+        zones = []
+        for i in range(n):
+            mr, color = markers[i]
+            zs = 0 if i == 0 else (markers[i - 1][0] + mr) // 2 + 1
+            ze = H - 1 if i == n - 1 else (mr + markers[i + 1][0]) // 2
+            zones.append((zs, ze, color, mr))
+        output = [[0] * W for _ in range(H)]
+        for zs, ze, color, mr in zones:
+            for r in range(zs, ze + 1):
+                if r == 0 or r == H - 1 or r == mr:
+                    for c in range(W):
+                        output[r][c] = color
+                else:
+                    output[r][0] = color
+                    output[r][W - 1] = color
+        return output
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            pred = self._solve_grid(pair["input"])
+            if pred != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            preds.append(_mk(self._solve_grid(inp), self.name))
+        return _res(ctx.task_id, preds)
+
+
+# p134 – DiagonalTriangleSolver  (task 1478ab18)
+# 4 fives pair uniquely into 2 diagonal pairs; bigger diagonal = hypotenuse A→B.
+# Right-angle corner K is the possible corner that is NOT one of the other fives.
+# Draw 8s on all 3 sides of the right triangle; never overwrite fives.
+
+@register_solver
+class DiagonalTriangleSolver(BaseSolver):
+    name = "DiagonalTriangleSolver"
+
+    def _find_pairing(self, fives):
+        pts = fives
+        pairings = [
+            ((pts[0], pts[1]), (pts[2], pts[3])),
+            ((pts[0], pts[2]), (pts[1], pts[3])),
+            ((pts[0], pts[3]), (pts[1], pts[2])),
+        ]
+        for pair1, pair2 in pairings:
+            (r1, c1), (r2, c2) = pair1
+            (r3, c3), (r4, c4) = pair2
+            if abs(r1-r2)==abs(c1-c2) and abs(r1-r2)>0 and abs(r3-r4)==abs(c3-c4) and abs(r3-r4)>0:
+                return pair1, pair2
+        return None
+
+    def _solve_grid(self, grid):
+        H, W = len(grid), len(grid[0])
+        fives = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 5]
+        if len(fives) != 4:
+            return None
+        five_set = set(fives)
+        result = self._find_pairing(fives)
+        if result is None:
+            return None
+        pair1, pair2 = result
+        dr1 = abs(pair1[0][0] - pair1[1][0])
+        dr2 = abs(pair2[0][0] - pair2[1][0])
+        big, small = (pair1, pair2) if dr1 >= dr2 else (pair2, pair1)
+        A, B = big
+        small_set = set(small)
+        K1 = (A[0], B[1])
+        K2 = (B[0], A[1])
+        K = K2 if K1 in small_set else K1
+        output = [row[:] for row in grid]
+
+        def set8(r, c):
+            if 0 <= r < H and 0 <= c < W and (r, c) not in five_set:
+                output[r][c] = 8
+
+        # Side A→K (horizontal or vertical)
+        if A[0] == K[0]:
+            step = 1 if K[1] > A[1] else -1
+            for c in range(A[1] + step, K[1] + step, step):
+                set8(A[0], c)
+        else:
+            step = 1 if K[0] > A[0] else -1
+            for r in range(A[0] + step, K[0] + step, step):
+                set8(r, A[1])
+
+        # Side B→K (horizontal or vertical)
+        if B[0] == K[0]:
+            step = 1 if K[1] > B[1] else -1
+            for c in range(B[1] + step, K[1] + step, step):
+                set8(B[0], c)
+        else:
+            step = 1 if K[0] > B[0] else -1
+            for r in range(B[0] + step, K[0] + step, step):
+                set8(r, B[1])
+
+        # Side A→B diagonal (exclusive of both endpoints)
+        dr = 1 if B[0] > A[0] else -1
+        dc = 1 if B[1] > A[1] else -1
+        r, c = A[0] + dr, A[1] + dc
+        while (r, c) != B:
+            set8(r, c)
+            r += dr
+            c += dc
+
+        return output
+
+    def solve(self, ctx: TaskContext):
+        for pair in ctx.train_pairs:
+            pred = self._solve_grid(pair["input"])
+            if pred is None or pred != [list(r) for r in pair["output"]]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._solve_grid(inp)
             if g is None:
                 return None
             preds.append(_mk(g, self.name))

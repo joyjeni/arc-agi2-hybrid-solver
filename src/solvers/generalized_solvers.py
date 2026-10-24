@@ -5030,3 +5030,407 @@ class StripeFenceSolver(BaseSolver):
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
             results.append(out)
         return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class TwoEndRowFillSolver(BaseSolver):
+    """
+    Rows where col[0] != 0 AND col[W-1] != 0 are anchor rows.
+    Fill: cols 0..W//2-1 = left color, col W//2 = 5, cols W//2+1..W-1 = right color.
+    Non-anchor rows are unchanged.
+    Covers: 29c11459.
+    """
+    name = "two_end_row_fill_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        mid = W // 2
+        for r in range(H):
+            left = grid[r][0]
+            right = grid[r][W - 1]
+            if left != 0 and right != 0:
+                for c in range(mid):
+                    out[r][c] = left
+                out[r][mid] = 5
+                for c in range(mid + 1, W):
+                    out[r][c] = right
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MarkerShootUpSolver(BaseSolver):
+    """
+    Main row (most 1s) has 1s plus special color markers.
+    Each special color shoots upward: special color placed fill_height rows above main row,
+    1s fill rows in between. fill_height per color is LEARNED from training pairs.
+    Covers: 72a961c9.
+    """
+    name = "marker_shoot_up_solver"
+
+    def _find_main_row(self, grid):
+        max_ones, main_row = -1, -1
+        for r, row in enumerate(grid):
+            cnt = sum(1 for c in row if c == 1)
+            if cnt > max_ones:
+                max_ones, main_row = cnt, r
+        return main_row
+
+    def _learn_fill_heights(self, train_pairs):
+        fill_heights = {}
+        for pair in train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if out is None:
+                continue
+            mr = self._find_main_row(inp)
+            W = len(inp[0])
+            out_h = len(out)
+            out_w = len(out[0]) if out else 0
+            for c in range(min(W, out_w)):
+                color = inp[mr][c]
+                if color not in (0, 1):
+                    for r in range(mr - 1, -1, -1):
+                        if r < out_h and out[r][c] == color:
+                            fill_heights[color] = mr - r
+                            break
+        return fill_heights
+
+    def _transform(self, grid, fill_heights):
+        H, W = len(grid), len(grid[0])
+        mr = self._find_main_row(grid)
+        out = [row[:] for row in grid]
+        for c in range(W):
+            color = grid[mr][c]
+            if color not in (0, 1) and color in fill_heights:
+                fh = fill_heights[color]
+                top = mr - fh
+                if top < 0:
+                    return None
+                out[top][c] = color
+                for r in range(top + 1, mr):
+                    out[r][c] = 1
+        return out
+
+    def solve(self, ctx):
+        fill_heights = self._learn_fill_heights(ctx.train_pairs)
+        if not fill_heights:
+            return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"], fill_heights)
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp, fill_heights)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class SameColorBorderGravitySolver(BaseSolver):
+    """
+    Row 0 = all top_color, Row H-1 = all bot_color, rest is bg.
+    Interior connected components of top_color slide UP: topmost cell → row 1.
+    Interior connected components of bot_color slide DOWN: bottommost cell → row H-2.
+    Components processed closest-to-border first.
+    Covers: 17829a00.
+    """
+    name = "same_color_border_gravity_solver"
+
+    def _get_components(self, grid, color, exclude_rows):
+        H, W = len(grid), len(grid[0])
+        visited = [[False] * W for _ in range(H)]
+        components = []
+        for r in range(H):
+            if r in exclude_rows:
+                continue
+            for c in range(W):
+                if grid[r][c] == color and not visited[r][c]:
+                    comp, q = [], [(r, c)]
+                    visited[r][c] = True
+                    while q:
+                        cr, cc = q.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nr, nc = cr + dr, cc + dc
+                            if (0 <= nr < H and 0 <= nc < W
+                                    and not visited[nr][nc]
+                                    and grid[nr][nc] == color
+                                    and nr not in exclude_rows):
+                                visited[nr][nc] = True
+                                q.append((nr, nc))
+                    components.append(comp)
+        return components
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        top_color = grid[0][0]
+        bot_color = grid[H - 1][0]
+        if not all(grid[0][c] == top_color for c in range(W)):
+            return None
+        if not all(grid[H - 1][c] == bot_color for c in range(W)):
+            return None
+        if top_color == bot_color:
+            return None
+        flat = [grid[r][c] for r in range(1, H - 1) for c in range(W)]
+        if not flat:
+            return None
+        bg = Counter(flat).most_common(1)[0][0]
+        if bg == top_color or bg == bot_color:
+            return None
+
+        out = [[bg] * W for _ in range(H)]
+        for c in range(W):
+            out[0][c] = top_color
+            out[H - 1][c] = bot_color
+
+        # Top-color components: slide UP, process closest to top first
+        top_comps = self._get_components(grid, top_color, {0, H - 1})
+        top_comps.sort(key=lambda comp: min(r for r, c in comp))
+        for comp in top_comps:
+            min_row = min(r for r, c in comp)
+            shift = min_row - 1
+            for r, c in comp:
+                out[r - shift][c] = top_color
+
+        # Bot-color components: slide DOWN, process closest to bottom first
+        bot_comps = self._get_components(grid, bot_color, {0, H - 1})
+        bot_comps.sort(key=lambda comp: max(r for r, c in comp), reverse=True)
+        for comp in bot_comps:
+            max_row = max(r for r, c in comp)
+            shift = (H - 2) - max_row
+            for r, c in comp:
+                out[r + shift][c] = bot_color
+
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class ComplementaryFillSolver(BaseSolver):
+    """
+    bg=7, marker=8. Grid split into groups by all-bg rows.
+    Each group has 8-cells packed from col 0 (jagged counts per row) and
+    colored cells on right side.
+    Complementarity rule: group_i.eight_counts[r] + group_j.color_counts[r] = K for all r.
+    Output: each group gets matched colors placed immediately right of its 8s;
+    8s stay at cols 0..ec-1, colors at cols ec..ec+cc-1, rest = bg.
+    Covers: 18447a8d.
+    """
+    name = "complementary_fill_solver"
+
+    BG = 7
+    MARKER = 8
+
+    def _split_groups(self, grid):
+        groups = []
+        current, start = [], None
+        for r, row in enumerate(grid):
+            if all(c == self.BG for c in row):
+                if current:
+                    groups.append((start, current))
+                    current, start = [], None
+            else:
+                if start is None:
+                    start = r
+                current.append(row)
+        if current:
+            groups.append((start, current))
+        return groups
+
+    def _extract(self, rows, W):
+        eight_counts, color_shapes = [], []
+        for row in rows:
+            ec = sum(1 for c in row if c == self.MARKER)
+            eight_counts.append(ec)
+            colors = [row[c] for c in range(W) if row[c] not in (self.BG, self.MARKER)]
+            color_shapes.append(colors)
+        return eight_counts, color_shapes
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        groups = self._split_groups(grid)
+        if len(groups) < 2:
+            return None
+
+        gdata = []
+        for start_row, rows in groups:
+            ec, cs = self._extract(rows, W)
+            gdata.append({'start': start_row, 'rows': rows,
+                          'ec': ec, 'cs': cs, 'n': len(rows)})
+
+        n = len(gdata)
+        K = None
+        for i in range(n):
+            for j in range(n):
+                if gdata[i]['n'] != gdata[j]['n']:
+                    continue
+                sums = [gdata[i]['ec'][r] + len(gdata[j]['cs'][r])
+                        for r in range(gdata[i]['n'])]
+                if len(set(sums)) == 1 and sums[0] > 0:
+                    K = sums[0]
+                    break
+            if K is not None:
+                break
+        if K is None:
+            return None
+
+        match = [-1] * n
+        used = set()
+        for i in range(n):
+            for j in range(n):
+                if j in used or gdata[i]['n'] != gdata[j]['n']:
+                    continue
+                sums = [gdata[i]['ec'][r] + len(gdata[j]['cs'][r])
+                        for r in range(gdata[i]['n'])]
+                if all(s == K for s in sums):
+                    match[i] = j
+                    used.add(j)
+                    break
+        if any(m == -1 for m in match):
+            return None
+
+        out = [[self.BG] * W for _ in range(H)]
+        for i, (start_row, rows) in enumerate(groups):
+            src = gdata[match[i]]
+            for ri in range(gdata[i]['n']):
+                r = start_row + ri
+                ec = gdata[i]['ec'][ri]
+                for c in range(ec):
+                    out[r][c] = self.MARKER
+                for k, color in enumerate(src['cs'][ri]):
+                    col = ec + k
+                    if col < W:
+                        out[r][col] = color
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MarkerTrailMoveSolver(BaseSolver):
+    """
+    A 3×3 box of 2s (center = 3) sits on a periodic trail of 3s (period 2).
+    Trail runs along the row or column passing through the box center.
+    Box moves ONE step (period = 2) toward the side with MORE trail markers outside the box.
+    Old center position is restored to 3 (trail marker) after the box moves.
+    Covers: 5168d44c.
+    """
+    name = "marker_trail_move_solver"
+
+    def _find_box_center(self, grid):
+        H, W = len(grid), len(grid[0])
+        for r in range(1, H - 1):
+            for c in range(1, W - 1):
+                if grid[r][c] == 3:
+                    if all(grid[r + dr][c + dc] == 2
+                           for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                           if (dr, dc) != (0, 0)):
+                        return r, c
+        return None, None
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        bg = Counter(cell for row in grid for cell in row).most_common(1)[0][0]
+
+        br, bc = self._find_box_center(grid)
+        if br is None:
+            return None
+
+        # Trail cells: 3s outside the box area
+        trail = [(r, c) for r in range(H) for c in range(W)
+                 if grid[r][c] == 3
+                 and not (br - 1 <= r <= br + 1 and bc - 1 <= c <= bc + 1)]
+
+        if not trail:
+            return None
+
+        # Determine axis
+        row_set = {r for r, c in trail}
+        col_set = {c for r, c in trail}
+
+        if len(col_set) == 1 and list(col_set)[0] == bc:
+            axis = 'v'
+        elif len(row_set) == 1 and list(row_set)[0] == br:
+            axis = 'h'
+        else:
+            return None
+
+        if axis == 'v':
+            up = sum(1 for r, c in trail if r < br)
+            dn = sum(1 for r, c in trail if r > br)
+            new_br = br - 2 if up > dn else br + 2
+            new_bc = bc
+        else:
+            lt = sum(1 for r, c in trail if c < bc)
+            rt = sum(1 for r, c in trail if c > bc)
+            new_br = br
+            new_bc = bc - 2 if lt > rt else bc + 2
+
+        if not (1 <= new_br <= H - 2 and 1 <= new_bc <= W - 2):
+            return None
+
+        out = [row[:] for row in grid]
+        # Clear old box
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                out[br + dr][bc + dc] = bg
+        # Restore trail marker at old center
+        out[br][bc] = 3
+        # Place new box
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                out[new_br + dr][new_bc + dc] = 2
+        out[new_br][new_bc] = 3
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
