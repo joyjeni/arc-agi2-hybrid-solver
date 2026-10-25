@@ -14,6 +14,12 @@ PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 # All source files to embed (relative to project root)
 SRC_FILES = [
     "src/__init__.py",
+    "src/llm/__init__.py",
+    "src/llm/engine.py",
+    "src/llm/program_synth.py",
+    "src/llm/chakra_ensemble.py",
+    "src/llm/prompts.py",
+    "src/llm/qwen3_ttt_solver.py",
     "src/core/__init__.py",
     "src/core/interfaces.py",
     "src/core/grid_codec.py",
