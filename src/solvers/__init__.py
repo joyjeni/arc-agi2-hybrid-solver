@@ -23,6 +23,7 @@ from . import (
     advanced_solvers14,    # noqa: F401
     advanced_solvers15,    # noqa: F401
     advanced_solvers16,    # noqa: F401
+    advanced_solvers17,    # noqa: F401
 )
 from .registry import REGISTRY, register_solver
 
