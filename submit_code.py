@@ -1,26 +1,39 @@
 #!/usr/bin/env python3
-"""Submit v31 kernel output to competition using code submission."""
+"""Submit latest kernel version output to competition using code submission."""
 import sys
-
-# Monkey-patch to see HTTP responses
-import kagglesdk.kaggle_http_client as khc
-_orig = khc.KaggleHttpClient._prepare_response
-def _patched(self, rt, hr):
-    print(f"[HTTP {hr.status_code}] {hr.url}")
-    print(f"  Body: {hr.text[:600]}")
-    return _orig(self, rt, hr)
-khc.KaggleHttpClient._prepare_response = _patched
 
 COMP    = 'arc-prize-2026-arc-agi-2'
 KERNEL  = 'joyjeni/arc-agi-2-solver-three-stage-pipeline'
-VERSION = 31
 FILE    = 'submission.json'
-DESC    = 'v31: T0 training-solution lookup — 240/240 tasks matched'
 
 from kaggle.api.kaggle_api_extended import KaggleApi
 api = KaggleApi()
 api.authenticate()
-print(f"Authenticated ✓")
+print("Authenticated ✓")
+
+# Auto-detect latest kernel version
+try:
+    status = api.kernels_status(KERNEL)
+    # status is a dict with currentRunningVersion or similar
+    import subprocess, json
+    out = subprocess.check_output(['kaggle', 'kernels', 'list', '--mine', '-s', 'arc-agi-2-solver', '--csv'], text=True)
+    # parse version from kernels output
+    VERSION = None
+    for line in out.strip().split('\n')[1:]:
+        parts = line.split(',')
+        if 'arc-agi-2-solver-three-stage-pipeline' in parts[0]:
+            VERSION = int(parts[3]) if len(parts) > 3 else None
+            break
+except Exception:
+    VERSION = None
+
+# Fallback: hard-code latest known version
+if not VERSION:
+    VERSION = 32
+    print(f"(auto-detect failed — using hard-coded VERSION={VERSION})")
+
+DESC = f'v{VERSION}: T0 disabled, NN base + T1 DSA — fix 0.00 root cause'
+
 print(f"Kernel  : {KERNEL}")
 print(f"Version : {VERSION}")
 print(f"File    : {FILE}")
@@ -33,7 +46,7 @@ try:
         competition=COMP,
         kernel=KERNEL,
         kernel_version=VERSION,
-        quiet=False
+        quiet=False,
     )
     print(f"\n✅ Submit result: {result}")
 except Exception as e:
