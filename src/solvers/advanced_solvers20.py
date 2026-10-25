@@ -125,7 +125,7 @@ class DiagonalPairConnectSolver(BaseSolver):
                 Prediction(attempt_1=out, attempt_2=out, solver_name=self.name)
             )
 
-        return SolverResult(task_id=ctx.task_id, predictions=predictions)
+        return SolverResult(task_id=ctx.task_id, predictions=predictions, solved=True, tier=2)
 
 
 # ===========================================================================
@@ -213,7 +213,7 @@ class TriangleMidpointSolver(BaseSolver):
                 Prediction(attempt_1=out, attempt_2=out, solver_name=self.name)
             )
 
-        return SolverResult(task_id=ctx.task_id, predictions=predictions)
+        return SolverResult(task_id=ctx.task_id, predictions=predictions, solved=True, tier=2)
 
 
 # ===========================================================================
@@ -301,7 +301,7 @@ class ClosestDividerRecolorSolver(BaseSolver):
                     Prediction(attempt_1=out, attempt_2=out, solver_name=self.name)
                 )
 
-            return SolverResult(task_id=ctx.task_id, predictions=predictions)
+            return SolverResult(task_id=ctx.task_id, predictions=predictions, solved=True, tier=2)
         except Exception:
             return None
 
@@ -443,7 +443,7 @@ class RectangleGapFillSolver(BaseSolver):
                     Prediction(attempt_1=out, attempt_2=out, solver_name=self.name)
                 )
 
-            return SolverResult(task_id=ctx.task_id, predictions=predictions)
+            return SolverResult(task_id=ctx.task_id, predictions=predictions, solved=True, tier=2)
         except Exception:
             return None
 
@@ -545,4 +545,4 @@ class PatternRowProjectionSolver(BaseSolver):
                 Prediction(attempt_1=out, attempt_2=out, solver_name=self.name)
             )
 
-        return SolverResult(task_id=ctx.task_id, predictions=predictions)
+        return SolverResult(task_id=ctx.task_id, predictions=predictions, solved=True, tier=2)

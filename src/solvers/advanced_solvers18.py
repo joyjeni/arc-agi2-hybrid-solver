@@ -18,7 +18,7 @@ def _copy_grid(g: Grid) -> Grid:
 
 def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
-    return SolverResult(task_id=ctx.task_id, predictions=preds)
+    return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 def _verify_exact(out: Grid, expected: Grid) -> bool:
     if len(out) != len(expected):
@@ -130,7 +130,7 @@ class MirrorAcrossDividerSolver(BaseSolver):
                 return None
             preds.append(Prediction(attempt_1=grid, attempt_2=grid, solver_name=self.name))
 
-        return SolverResult(task_id=ctx.task_id, predictions=preds)
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 # ===========================================================================
@@ -239,4 +239,4 @@ class PerimeterTilingSolver(BaseSolver):
                 return None
             preds.append(Prediction(attempt_1=grid, attempt_2=grid, solver_name=self.name))
 
-        return SolverResult(task_id=ctx.task_id, predictions=preds)
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)

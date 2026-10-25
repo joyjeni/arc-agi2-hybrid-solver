@@ -21,7 +21,7 @@ def _copy_grid(g: Grid) -> Grid:
 
 def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
-    return SolverResult(task_id=ctx.task_id, predictions=preds)
+    return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 def _all_colors(grid: Grid) -> Set[int]:
     return {cell for row in grid for cell in row}

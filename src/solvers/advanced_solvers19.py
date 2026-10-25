@@ -145,7 +145,7 @@ class StrayToAdjacentDividerSolver(BaseSolver):
                 return None
             preds.append(Prediction(attempt_1=grid, attempt_2=grid,
                                     solver_name=self.name))
-        return SolverResult(task_id=ctx.task_id, predictions=preds)
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 # ===========================================================================
@@ -231,7 +231,7 @@ class IntersectionColorSwapSolver(BaseSolver):
                 return None
             preds.append(Prediction(attempt_1=grid, attempt_2=grid,
                                     solver_name=self.name))
-        return SolverResult(task_id=ctx.task_id, predictions=preds)
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 # ===========================================================================
@@ -361,4 +361,4 @@ class DiagonalRayFromInteriorSolver(BaseSolver):
                 return None
             preds.append(Prediction(attempt_1=grid, attempt_2=grid,
                                     solver_name=self.name))
-        return SolverResult(task_id=ctx.task_id, predictions=preds)
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
