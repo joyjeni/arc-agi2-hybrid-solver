@@ -360,6 +360,14 @@ def _bar_height(grid: Grid, col: int) -> int:
     return h
 
 
+def _bar_color(grid: Grid, col: int) -> int:
+    """Return the non-BG color in this column (first non-7 cell found top-down)."""
+    for row in grid:
+        if row[col] != _BAR_BG:
+            return row[col]
+    return _BAR_BG
+
+
 def _barsum_solve(grid: Grid) -> Optional[Grid]:
     rows = len(grid)
     cols = len(grid[0]) if grid else 0
@@ -375,12 +383,21 @@ def _barsum_solve(grid: Grid) -> Optional[Grid]:
     if bar_cols != expected_cols:
         return None
 
-    k = len(bar_cols)
     heights = [_bar_height(grid, c) for c in bar_cols]
     if any(h == 0 for h in heights):
         return None
 
-    out_h = 5 * k - sum(heights)
+    # Determine the two bar colors present; compute signed sum
+    # out_h = |sum_height(color_A) - sum_height(color_B)|
+    bar_colors = [_bar_color(grid, c) for c in bar_cols]
+    unique_colors = sorted(set(bar_colors))
+    if len(unique_colors) > 2:
+        return None  # unexpected — more than 2 colors
+    c1 = unique_colors[0]  # treated as +1
+    c2 = unique_colors[1] if len(unique_colors) > 1 else -1  # treated as -1
+    sum_c1 = sum(h for h, col_c in zip(heights, bar_colors) if col_c == c1)
+    sum_c2 = sum(h for h, col_c in zip(heights, bar_colors) if col_c == c2)
+    out_h = abs(sum_c1 - sum_c2)
     out_col = bar_cols[-1] + 2
 
     if out_h <= 0 or out_h > rows or out_col >= cols:

@@ -1,0 +1,364 @@
+{
+  "IsolatedCellsToColorSolver": {
+    "module": 16,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "NearestPixelToFiveBlockSolver": {
+    "module": 16,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "SizeRankRecolorSolver": {
+    "module": 16,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "RaycastBlockEdgeSolver": {
+    "module": 16,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "KeyRotateTilePaintSolver": {
+    "module": 17,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "SixFrameBorderFillSolver": {
+    "module": 17,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "QuadrantPaintBlockSolver": {
+    "module": 17,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "SixBlockWaveExpandSolver": {
+    "module": 17,
+    "solved": 0,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "MirrorAcrossDividerSolver": {
+    "module": 18,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "PerimeterTilingSolver": {
+    "module": 18,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "StrayToAdjacentDividerSolver": {
+    "module": 19,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 7,
+    "wrong_ids": [],
+    "error_ids": [
+      [
+        "1b2d62fb",
+        "list index out of range"
+      ],
+      [
+        "7b7f7511",
+        "list index out of range"
+      ],
+      [
+        "ba1aa698",
+        "list index out of range"
+      ]
+    ]
+  },
+  "IntersectionColorSwapSolver": {
+    "module": 19,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 6,
+    "wrong_ids": [],
+    "error_ids": [
+      [
+        "2dee498d",
+        "list index out of range"
+      ],
+      [
+        "7b7f7511",
+        "list index out of range"
+      ],
+      [
+        "93b4f4b3",
+        "list index out of range"
+      ]
+    ]
+  },
+  "DiagonalRayFromInteriorSolver": {
+    "module": 19,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "DiagonalPairConnectSolver": {
+    "module": 20,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "TriangleMidpointSolver": {
+    "module": 20,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "ClosestDividerRecolorSolver": {
+    "module": 20,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "RectangleGapFillSolver": {
+    "module": 20,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "PatternRowProjectionSolver": {
+    "module": 20,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FloodTowardBorderSolver": {
+    "module": 21,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "ColumnPartitionSolver": {
+    "module": 21,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FilledRectanglePartitionSolver": {
+    "module": 21,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "CrossAroundPixelSolver": {
+    "module": 21,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "BlockComplementSolver": {
+    "module": 22,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FiveBoxDirectionSolver": {
+    "module": 22,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "DiagonalTypeClassifierSolver": {
+    "module": 22,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "DiagonalWedgeFillSolver": {
+    "module": 22,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FiveCornerArmRecolorSolver": {
+    "module": 23,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "ColorDirectionSlideSolver": {
+    "module": 23,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FiveMarkerRunFillSolver": {
+    "module": 23,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "AdjacentThreeTwoEraseSolver": {
+    "module": 23,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "MetaGridCrossPropagateSolver": {
+    "module": 24,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "AlternatingSpacedEchoSolver": {
+    "module": 24,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "LatinSquareCompletionSolver": {
+    "module": 24,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "VerticalBarSumSolver": {
+    "module": 24,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "ColParityRecolorSolver": {
+    "module": 25,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "CellularAutomatonPairSolver": {
+    "module": 25,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "ArrowDirectedMirrorSolver": {
+    "module": 25,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "BoundingBoxFillSolver": {
+    "module": 25,
+    "solved": 3,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "QuadrantFillSolver": {
+    "module": 26,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "CornerTriangleCWSolver": {
+    "module": 26,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "RectangleFillByAreaSolver": {
+    "module": 26,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "RingToCrossReplaceSolver": {
+    "module": 26,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  }
+}

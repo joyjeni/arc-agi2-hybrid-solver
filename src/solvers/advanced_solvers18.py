@@ -240,3 +240,120 @@ class PerimeterTilingSolver(BaseSolver):
             preds.append(Prediction(attempt_1=grid, attempt_2=grid, solver_name=self.name))
 
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
+
+
+# ===========================================================================
+# 3. ColorSwapMirrorSolver  —  task 2b01abd0
+# ===========================================================================
+#
+# Rule:
+#   Background = 0.  A full divider row or column of 1s splits the grid.
+#   Exactly 2 non-BG/non-divider colors (A, B) appear on ONE side only.
+#   Output:
+#     • Original side  → swap A↔B in place for every shape cell.
+#     • Empty side     → mirror of original shape across the divider,
+#                         colors unchanged (A stays A, B stays B).
+
+def _solve_color_swap_mirror(grid: Grid) -> Optional[Grid]:
+    BG = 0
+    DIVIDER = 1
+    H, W = len(grid), len(grid[0])
+
+    # Detect full-column or full-row divider
+    div_kind: Optional[str] = None
+    div_param: int = 0
+
+    for c in range(W):
+        if all(grid[r][c] == DIVIDER for r in range(H)):
+            div_kind = 'col'
+            div_param = c
+            break
+    if div_kind is None:
+        for r in range(H):
+            if all(grid[r][c] == DIVIDER for c in range(W)):
+                div_kind = 'row'
+                div_param = r
+                break
+    if div_kind is None:
+        return None
+
+    # Collect shape cells (non-BG, non-divider)
+    shape_cells = [
+        (r, c, grid[r][c])
+        for r in range(H)
+        for c in range(W)
+        if grid[r][c] != BG and grid[r][c] != DIVIDER
+    ]
+    if not shape_cells:
+        return None
+
+    # Must be exactly 2 colors
+    colors = list({v for _, _, v in shape_cells})
+    if len(colors) != 2:
+        return None
+    color_A, color_B = colors[0], colors[1]
+    swap = {color_A: color_B, color_B: color_A}
+
+    # Determine which side holds the shape; other side must be empty
+    d = div_param
+    if div_kind == 'col':
+        lo = [(r, c, v) for r, c, v in shape_cells if c < d]
+        hi = [(r, c, v) for r, c, v in shape_cells if c > d]
+    else:
+        lo = [(r, c, v) for r, c, v in shape_cells if r < d]
+        hi = [(r, c, v) for r, c, v in shape_cells if r > d]
+
+    if lo and not hi:
+        orig_cells = lo
+    elif hi and not lo:
+        orig_cells = hi
+    else:
+        return None  # shape on both sides — not this pattern
+
+    result = _copy_grid(grid)
+
+    # Swap A↔B in place on the original side
+    for r, c, v in orig_cells:
+        result[r][c] = swap[v]
+
+    # Mirror original shape (original colors) onto the empty side
+    for r, c, v in orig_cells:
+        if div_kind == 'col':
+            nr, nc = r, 2 * d - c
+        else:
+            nr, nc = 2 * d - r, c
+        if 0 <= nr < H and 0 <= nc < W and result[nr][nc] == BG:
+            result[nr][nc] = v
+
+    return result
+
+
+@register_solver
+class ColorSwapMirrorSolver(BaseSolver):
+    """
+    Divider (full row/col of 1s) + 2-color shape on one side only.
+    Original side: swap the 2 colors in place.
+    Empty side: mirror of original shape, colors unchanged.
+    (task 2b01abd0)
+    """
+
+    TARGET_TASK = "2b01abd0"
+
+    @property
+    def name(self) -> str:
+        return "ColorSwapMirrorSolver"
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        for pair in ctx.train_pairs:
+            pred = _solve_color_swap_mirror(pair["input"])
+            if pred is None or not _verify_exact(pred, pair["output"]):
+                return None
+
+        preds = []
+        for test_input in ctx.test_inputs:
+            grid = _solve_color_swap_mirror(test_input)
+            if grid is None:
+                return None
+            preds.append(Prediction(attempt_1=grid, attempt_2=grid, solver_name=self.name))
+
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
