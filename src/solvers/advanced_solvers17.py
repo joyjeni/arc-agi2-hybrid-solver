@@ -167,7 +167,9 @@ class KeyRotateTilePaintSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_key_rotate_tile_paint(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -245,7 +247,9 @@ class SixFrameBorderFillSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_six_frame_border_fill(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -352,7 +356,9 @@ class QuadrantPaintBlockSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_quadrant_paint(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -460,6 +466,8 @@ class SixBlockWaveExpandSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_six_block_wave_expand(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)

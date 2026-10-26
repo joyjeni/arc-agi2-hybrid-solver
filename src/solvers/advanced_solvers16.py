@@ -117,7 +117,9 @@ class IsolatedCellsToColorSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_isolated_cells_to_color(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -212,7 +214,9 @@ class NearestPixelToFiveBlockSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_nearest_pixel_to_five_block(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -285,7 +289,9 @@ class SizeRankRecolorSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_size_rank_recolor(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
 
@@ -401,6 +407,8 @@ class RaycastBlockEdgeSolver(BaseSolver):
         except Exception:
             return False
 
-    def solve(self, ctx: TaskContext) -> SolverResult:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
+        if not self.can_solve(ctx):
+            return None
         outputs = [_apply_raycast_block_edge(t) for t in ctx.test_inputs]
         return _make_result(outputs, ctx, self.name)
