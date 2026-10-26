@@ -422,5 +422,53 @@
     "errors": 0,
     "wrong_ids": [],
     "error_ids": []
+  },
+  "DiagonalBounceSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "PerimeterFillSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "CrossArmsCondenserSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "LPathFillSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FractalStairSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "SelfTilingSolver": {
+    "module": 28,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
   }
 }
