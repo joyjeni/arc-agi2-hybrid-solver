@@ -20,7 +20,7 @@ solutions  = load_solutions (str(ROOT / "data/arc-agi_training_solutions.json"))
 
 # ── solver name → module mapping ────────────────────────────────────────────
 SOLVER_MODULE: dict[str, int] = {}
-for num in range(16, 29):
+for num in range(16, 30):
     txt = (ROOT / f"src/solvers/advanced_solvers{num}.py").read_text()
     for cls in _re.findall(r'@register_solver\s+class\s+(\w+)', txt, _re.S):
         SOLVER_MODULE[cls] = num
