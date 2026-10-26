@@ -1,5 +1,5 @@
 """
-fp_audit.py — False-positive audit for advanced_solvers 16–26.
+fp_audit.py — False-positive audit for advanced_solvers 16–27.
 
 For every solver, tries it on every training task.
 Reports: solved, wrong (false positives), skipped (not attempted).
@@ -20,13 +20,13 @@ solutions  = load_solutions (str(ROOT / "data/arc-agi_training_solutions.json"))
 
 # ── solver name → module mapping ────────────────────────────────────────────
 SOLVER_MODULE: dict[str, int] = {}
-for num in range(16, 27):
+for num in range(16, 28):
     txt = (ROOT / f"src/solvers/advanced_solvers{num}.py").read_text()
     for cls in _re.findall(r'@register_solver\s+class\s+(\w+)', txt, _re.S):
         SOLVER_MODULE[cls] = num
 
 TARGET_SOLVERS = list(SOLVER_MODULE.keys())
-print(f"Auditing {len(TARGET_SOLVERS)} solvers across advanced_solvers16-26")
+print(f"Auditing {len(TARGET_SOLVERS)} solvers across advanced_solvers16-27")
 print(f"Training tasks: {len(challenges)}\n")
 
 # ── audit ────────────────────────────────────────────────────────────────────

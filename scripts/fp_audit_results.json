@@ -79,6 +79,23 @@
     "wrong_ids": [],
     "error_ids": []
   },
+  "ColorSwapMirrorSolver": {
+    "module": 18,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 2,
+    "wrong_ids": [],
+    "error_ids": [
+      [
+        "ba1aa698",
+        "list index out of range"
+      ],
+      [
+        "bbb1b8b6",
+        "list index out of range"
+      ]
+    ]
+  },
   "StrayToAdjacentDividerSolver": {
     "module": 19,
     "solved": 1,
@@ -355,6 +372,51 @@
   },
   "RingToCrossReplaceSolver": {
     "module": 26,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "GravityDownLargeSolver": {
+    "module": 27,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "GravityUpBySizeSolver": {
+    "module": 27,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "GravityDownOneRowGapSolver": {
+    "module": 27,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 3,
+    "wrong_ids": [],
+    "error_ids": [
+      [
+        "bbc9ae5d",
+        "list index out of range"
+      ],
+      [
+        "c1990cce",
+        "list index out of range"
+      ],
+      [
+        "feca6190",
+        "list index out of range"
+      ]
+    ]
+  },
+  "ConcentricRingsColorCycleSolver": {
+    "module": 27,
     "solved": 1,
     "wrong": 0,
     "errors": 0,

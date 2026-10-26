@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -62,9 +63,43 @@ class BaseSolver(ABC):
         """
         ...
 
-    def _timed_solve(self, ctx: TaskContext) -> SolverResult | None:
+    def _timed_solve(
+        self,
+        ctx: TaskContext,
+        timeout_s: float | None = None,
+    ) -> SolverResult | None:
+        """
+        Run solve() with optional hard-timeout.
+
+        If ``timeout_s`` is given and solve() does not return within that many
+        seconds, the call is abandoned (the daemon thread may continue briefly
+        in the background but its result is discarded) and None is returned.
+        This prevents any single solver from hanging the whole pipeline.
+        """
         t0 = time.perf_counter()
-        result = self.solve(ctx)
+
+        if timeout_s is None:
+            result = self.solve(ctx)
+        else:
+            _result: list[SolverResult | None] = [None]
+            _exc: list[BaseException | None] = [None]
+
+            def _run() -> None:
+                try:
+                    _result[0] = self.solve(ctx)
+                except Exception as e:
+                    _exc[0] = e
+
+            t = threading.Thread(target=_run, daemon=True)
+            t.start()
+            t.join(timeout=timeout_s)
+            if t.is_alive():
+                # Thread is still running — solver hung; abandon gracefully
+                return None
+            if _exc[0] is not None:
+                raise _exc[0]
+            result = _result[0]
+
         elapsed = (time.perf_counter() - t0) * 1000
         if result:
             for p in result.predictions:

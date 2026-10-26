@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, wait as _fut_wait
 from pathlib import Path
@@ -30,6 +31,79 @@ from .solvers import REGISTRY
 from .solvers.registry import SolverRegistry
 
 logger = logging.getLogger(__name__)
+
+# ── Dynamic per-task time budget ──────────────────────────────────────────────
+
+class TaskBudgetManager:
+    """
+    Thread-safe rolling-average per-task time budget.
+
+    Budget = max(MIN_FLOOR_S, min(MAX_CAP_S, 2 × rolling_avg)).
+
+    Only tasks that ran for at least MIN_RECORD_S are included in the
+    average — instant no-match skips (elapsed ≈ 0) are ignored so the
+    budget does not collapse toward zero.
+
+    Usage inside _solve_one::
+
+        t_task = time.perf_counter()
+        for solver in solvers:
+            elapsed = time.perf_counter() - t_task
+            if budget_mgr.should_skip(elapsed):
+                break
+            res = solver._timed_solve(ctx, timeout_s=per_task_s)
+            ...
+        budget_mgr.record(time.perf_counter() - t_task)
+    """
+
+    MIN_FLOOR_S:   float = 2.0    # never below 2 s per task
+    MAX_CAP_S:     float = 30.0   # never above 30 s per task
+    MIN_RECORD_S:  float = 0.05   # (unused — only solved tasks are recorded)
+
+    def __init__(self, max_cap_s: float = 30.0) -> None:
+        self.MAX_CAP_S = max_cap_s
+        self._lock = threading.Lock()
+        self._times: list[float] = []
+        self._skipped: int = 0
+
+    # ------------------------------------------------------------------ #
+    def record(self, elapsed_s: float) -> None:
+        """Register a SOLVED task's wall time."""
+        with self._lock:
+            self._times.append(max(elapsed_s, 1e-6))
+
+    def record_skip(self) -> None:
+        with self._lock:
+            self._skipped += 1
+
+    def per_task_budget(self) -> float:
+        """2 × rolling average of meaningful tasks, clamped to [MIN_FLOOR_S, MAX_CAP_S]."""
+        with self._lock:
+            if not self._times:
+                return self.MAX_CAP_S
+            avg = sum(self._times) / len(self._times)
+        return max(self.MIN_FLOOR_S, min(self.MAX_CAP_S, avg * 2.0))
+
+    def should_skip(self, elapsed_s: float) -> bool:
+        """True when this task has already exceeded its dynamic budget."""
+        return elapsed_s > self.per_task_budget()
+
+    def remaining(self, elapsed_s: float) -> float:
+        """Seconds left in budget for the current task (>= MIN_FLOOR_S)."""
+        return max(self.MIN_FLOOR_S, self.per_task_budget() - elapsed_s)
+
+    def stats(self) -> dict:
+        with self._lock:
+            n = len(self._times)
+            avg = sum(self._times) / n if n else 0.0
+            skipped = self._skipped
+        return {
+            "completed": n,
+            "avg_s": round(avg, 3),
+            "budget_s": round(self.per_task_budget(), 3),
+            "skipped": skipped,
+        }
+
 
 # ── Solver-tier classification ────────────────────────────────────────────────
 # Stage 1 = deterministic (dsa_solvers, vedic_solvers)
@@ -215,14 +289,27 @@ def run_stage2(
         len(solvers), len(pending), n_workers, total_budget_s,
     )
 
+    budget_mgr = TaskBudgetManager(max_cap_s=min(per_task_s, 30.0))
+
     def _solve_one(item):
         tid, ctx = item
         t_start = time.perf_counter()
+        task_budget = budget_mgr.per_task_budget()
         for solver in solvers:
-            if time.perf_counter() - t_start > per_task_s:
+            elapsed = time.perf_counter() - t_start
+            if elapsed > per_task_s:
+                logger.debug("S2 hard-cap skip %s (%.2fs > %.2fs)", tid, elapsed, per_task_s)
+                break
+            if budget_mgr.should_skip(elapsed):
+                logger.debug(
+                    "S2 dyn-skip %s (%.2fs > budget %.2fs)", tid, elapsed, task_budget
+                )
+                budget_mgr.record_skip()
                 break
             try:
-                res = solver._timed_solve(ctx)
+                # Use static per_task_s as hard solver timeout to catch hangs.
+                # Dynamic budget only controls the inter-iteration skip check above.
+                res = solver._timed_solve(ctx, timeout_s=per_task_s)
                 if res and res.solved:
                     # If Stage-3 produced hints, use them as attempt_2 fallback
                     if ctx.stage3_hints:
@@ -230,6 +317,9 @@ def run_stage2(
                             if (i < len(ctx.stage3_hints)
                                     and ctx.stage3_hints[i] is not None):
                                 pred.attempt_2 = ctx.stage3_hints[i]
+                    # Record only solved task times so the budget tracks
+                    # real solve complexity, not failed-attempt noise.
+                    budget_mgr.record(time.perf_counter() - t_start)
                     return tid, res
             except Exception as exc:
                 logger.debug("S2 %s/%s: %s", solver.name, tid, exc)
@@ -252,9 +342,12 @@ def run_stage2(
                 logger.debug("S2 result error: %s", exc)
 
     elapsed = time.perf_counter() - t0
+    bstats = budget_mgr.stats()
     logger.info(
-        "Stage-2 done in %.1fs: %d/%d solved (%d timed-out)",
+        "Stage-2 done in %.1fs: %d/%d solved (%d timed-out) | "
+        "avg_task=%.3fs budget=%.3fs skipped=%d",
         elapsed, len(results), len(pending), len(not_done),
+        bstats["avg_s"], bstats["budget_s"], bstats["skipped"],
     )
     return results
 
@@ -289,14 +382,26 @@ def run_stage1(
         len(solvers), len(pending), n_workers, total_budget_s,
     )
 
+    budget_mgr = TaskBudgetManager(max_cap_s=min(per_task_s, 30.0))
+
     def _solve_one(item):
         tid, ctx = item
         t_start = time.perf_counter()
+        task_budget = budget_mgr.per_task_budget()
         for solver in solvers:
-            if time.perf_counter() - t_start > per_task_s:
+            elapsed = time.perf_counter() - t_start
+            if elapsed > per_task_s:
+                logger.debug("S1 hard-cap skip %s (%.2fs > %.2fs)", tid, elapsed, per_task_s)
+                break
+            if budget_mgr.should_skip(elapsed):
+                logger.debug(
+                    "S1 dyn-skip %s (%.2fs > budget %.2fs)", tid, elapsed, task_budget
+                )
+                budget_mgr.record_skip()
                 break
             try:
-                res = solver._timed_solve(ctx)
+                # Static per_task_s as hard solver timeout (catch hangs).
+                res = solver._timed_solve(ctx, timeout_s=per_task_s)
                 if res and res.solved:
                     # Inject Stage-3 hints as attempt_2 when present
                     if ctx.stage3_hints:
@@ -304,6 +409,7 @@ def run_stage1(
                             if (i < len(ctx.stage3_hints)
                                     and ctx.stage3_hints[i] is not None):
                                 pred.attempt_2 = ctx.stage3_hints[i]
+                    budget_mgr.record(time.perf_counter() - t_start)
                     return tid, res
             except Exception as exc:
                 logger.debug("S1 %s/%s: %s", solver.name, tid, exc)
@@ -326,9 +432,12 @@ def run_stage1(
                 logger.debug("S1 result error: %s", exc)
 
     elapsed = time.perf_counter() - t0
+    bstats = budget_mgr.stats()
     logger.info(
-        "Stage-1 done in %.1fs: %d/%d solved (%d timed-out)",
+        "Stage-1 done in %.1fs: %d/%d solved (%d timed-out) | "
+        "avg_task=%.3fs budget=%.3fs skipped=%d",
         elapsed, len(results), len(pending), len(not_done),
+        bstats["avg_s"], bstats["budget_s"], bstats["skipped"],
     )
     return results
 
