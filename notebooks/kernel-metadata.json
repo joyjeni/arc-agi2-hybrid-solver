@@ -13,5 +13,7 @@
     "arc-prize-2026-arc-agi-2"
   ],
   "kernel_sources": [],
-  "model_sources": []
+  "model_sources": [
+    "sorokin/qwen3_4b_grids15_sft139/transformers/bfloat16/1"
+  ]
 }

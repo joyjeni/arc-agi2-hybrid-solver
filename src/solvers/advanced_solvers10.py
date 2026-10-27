@@ -84,8 +84,27 @@ class BBoxCCFillSolver(BaseSolver):
 
     def _apply(self, inp: Grid, fill_color: int) -> Grid:
         bg = _bg(inp)
-        ccs = _find_ccs(inp, bg)
+        # Use 8-connectivity so diagonally-touching cells form one object
         rows, cols = len(inp), len(inp[0])
+        visited = set()
+        ccs = []
+        for r in range(rows):
+            for c in range(cols):
+                if inp[r][c] != bg and (r, c) not in visited:
+                    comp = set()
+                    stack = [(r, c)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in visited: continue
+                        if cr < 0 or cr >= rows or cc < 0 or cc >= cols: continue
+                        if inp[cr][cc] == bg: continue
+                        visited.add((cr, cc))
+                        comp.add((cr, cc))
+                        for dr in (-1, 0, 1):
+                            for dc in (-1, 0, 1):
+                                if dr == 0 and dc == 0: continue
+                                stack.append((cr+dr, cc+dc))
+                    ccs.append(comp)
         out = [row[:] for row in inp]
         for comp in ccs:
             r0, r1, c0, c1 = _bbox(comp)

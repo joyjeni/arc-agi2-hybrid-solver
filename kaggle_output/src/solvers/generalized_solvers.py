@@ -1,0 +1,5436 @@
+"""
+generalized_solvers.py — Self-learning pattern induction engine for ARC-AGI-2.
+
+Covers the 6 dominant unsolved buckets identified from the 864-task audit:
+  1. NeighborhoodRuleInducerSolver   — context→color lookup (RECOLOR_SAME_SIZE)
+  2. PaletteRemapInducerSolver       — systematic color remapping
+  3. FloodFillFromSeedSolver         — flood fill from marker pixel
+  4. FillEnclosedRegionsSolver       — fill interiors of closed borders
+  5. RemoveOutliersSolver            — remove isolated / noise pixels
+  6. ObjectRecolorBySizeSolver       — recolor connected regions by area rank
+  7. ObjectRecolorByEnclosedSolver   — enclosed-region content determines recolor
+  8. SymmetryCompletionInducerSolver — induce & complete grid symmetry
+  9. SeparatorZoneFillInducerSolver  — divide by separator lines, fill zones
+  10. ExtractLargestObjectSolver     — crop bounding-box of dominant object
+  11. ColorMapFromIntersectionSolver — mark line-cross intersections
+  12. NoiseFilterObjectsSolver       — keep largest connected component per color
+  13. RegionCountOutputSolver        — count regions → single-cell output
+  14. ObjectPropertyGridSolver       — grid of object properties (SHRINK)
+  15. HoleCountRecolorSolver         — recolor objects by number of enclosed holes
+  16. DiagonalFloodFillSolver        — 8-connected flood fill variant
+  17. MirrorFillSolver               — reflect object across detected axis
+  18. ColorFreqReplaceSolver         — replace least-frequent color with most-frequent
+  19. CellNeighborColorSolver        — each cell gets color of majority neighbor
+  20. FrameInteriorColorSolver       — fill frame interior with dominant frame color
+"""
+from __future__ import annotations
+
+import collections
+from collections import Counter, defaultdict, deque
+from typing import Optional
+
+from ..core.grid_codec import (
+    Grid,
+    background_color,
+    color_histogram,
+    copy_grid,
+)
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
+from .registry import register_solver
+
+
+# ── Shared utilities ──────────────────────────────────────────────────────────
+
+def _shape(g: Grid):
+    return len(g), len(g[0]) if g else 0
+
+def _eq(a: Grid, b: Grid) -> bool:
+    return a == b
+
+def _bg(g: Grid) -> int:
+    return background_color(g)
+
+def _clone(g: Grid) -> Grid:
+    return [list(r) for r in g]
+
+def _unique(g: Grid) -> set:
+    s = set()
+    for r in g: s.update(r)
+    return s
+
+def _nonbg_cells(g: Grid, bg: int):
+    H, W = _shape(g)
+    return [(r, c) for r in range(H) for c in range(W) if g[r][c] != bg]
+
+def _bfs(g: Grid, sr: int, sc: int, passable=None) -> set:
+    H, W = _shape(g)
+    color = g[sr][sc]
+    if passable is None:
+        passable = {color}
+    visited = {(sr, sc)}
+    q = deque([(sr, sc)])
+    while q:
+        r, c = q.popleft()
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < H and 0 <= nc < W and (nr,nc) not in visited and g[nr][nc] in passable:
+                visited.add((nr,nc))
+                q.append((nr,nc))
+    return visited
+
+def _connected_components(g: Grid, bg: int) -> list[set]:
+    H, W = _shape(g)
+    visited = set()
+    comps = []
+    for r in range(H):
+        for c in range(W):
+            if g[r][c] != bg and (r,c) not in visited:
+                comp = _bfs(g, r, c, passable={g[r][c]})
+                visited.update(comp)
+                comps.append(comp)
+    return comps
+
+def _all_components_by_color(g: Grid) -> dict[int, list[set]]:
+    H, W = _shape(g)
+    by_color = defaultdict(list)
+    visited = set()
+    for r in range(H):
+        for c in range(W):
+            col = g[r][c]
+            if (r,c) not in visited:
+                comp = _bfs(g, r, c, passable={col})
+                visited.update(comp)
+                by_color[col].append(comp)
+    return dict(by_color)
+
+def _is_border_cell(r, c, H, W):
+    return r == 0 or r == H-1 or c == 0 or c == W-1
+
+def _interior_bg_cells(g: Grid, bg_val: int) -> set:
+    """Cells that are background but NOT reachable from any border."""
+    H, W = _shape(g)
+    # BFS from all border bg cells
+    visited = set()
+    q = deque()
+    for r in range(H):
+        for c in range(W):
+            if _is_border_cell(r, c, H, W) and g[r][c] == bg_val:
+                if (r,c) not in visited:
+                    visited.add((r,c))
+                    q.append((r,c))
+    while q:
+        r, c = q.popleft()
+        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < H and 0 <= nc < W and (nr,nc) not in visited and g[nr][nc] == bg_val:
+                visited.add((nr,nc))
+                q.append((nr,nc))
+    interior = set()
+    for r in range(H):
+        for c in range(W):
+            if g[r][c] == bg_val and (r,c) not in visited:
+                interior.add((r,c))
+    return interior
+
+def _make_result(ctx: TaskContext, grid: Grid, name: str, conf: float = 1.0) -> SolverResult:
+    preds = [Prediction(attempt_1=grid, attempt_2=grid, solver_name=name, confidence=conf)
+             for _ in ctx.test_inputs]
+    return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
+
+def _make_result_list(ctx: TaskContext, grids: list[Grid], name: str) -> SolverResult:
+    preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=name, confidence=1.0)
+             for g in grids]
+    return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
+
+def _get_neighborhood(g: Grid, r: int, c: int, radius: int = 1) -> tuple:
+    H, W = _shape(g)
+    cells = []
+    for dr in range(-radius, radius+1):
+        for dc in range(-radius, radius+1):
+            nr, nc = r+dr, c+dc
+            if 0 <= nr < H and 0 <= nc < W:
+                cells.append(g[nr][nc])
+            else:
+                cells.append(-1)
+    return tuple(cells)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 1. NeighborhoodRuleInducerSolver
+#    Learns: neighborhood_context → output_color lookup table from all training pairs.
+#    Handles same-size I/O. Tries radius 1 then radius 2.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class NeighborhoodRuleInducerSolver(BaseSolver):
+    """Strict version: neighborhood context -> output color.
+    Requires:
+    - All training pairs same-size I/O
+    - Every neighborhood key maps to EXACTLY ONE output color across all pairs
+    - Every test input key must appear in the learned rule (no unknowns)
+    - The rule must change at least one cell (non-identity)
+    - At least 2 training pairs required to avoid overfitting
+    """
+    name = "NeighborhoodRuleInducerSolver"
+    priority = 20
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if len(pairs) < 2:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        for radius in (1,):  # radius=1 only; radius=2 too large key space
+            # Build strict deterministic rule
+            resolved: dict[tuple, int] = {}
+            consistent = True
+            for p in pairs:
+                inp, out = p["input"], p["output"]
+                H, W = _shape(inp)
+                for r in range(H):
+                    for c in range(W):
+                        k = _get_neighborhood(inp, r, c, radius)
+                        v = out[r][c]
+                        if k in resolved:
+                            if resolved[k] != v:
+                                consistent = False
+                                break
+                        else:
+                            resolved[k] = v
+                    if not consistent:
+                        break
+                if not consistent:
+                    break
+            if not consistent:
+                continue
+
+            # Validate reconstruction on training pairs
+            ok = True
+            changed = False
+            for p in pairs:
+                inp, out = p["input"], p["output"]
+                H, W = _shape(inp)
+                for r in range(H):
+                    for c in range(W):
+                        k = _get_neighborhood(inp, r, c, radius)
+                        expected = resolved.get(k)
+                        if expected is None:
+                            ok = False; break
+                        if expected != out[r][c]:
+                            ok = False; break
+                        if expected != inp[r][c]:
+                            changed = True
+                    if not ok:
+                        break
+                if not ok:
+                    break
+            if not ok or not changed:
+                continue
+
+            # All test keys must be known
+            results = []
+            for test_in in ctx.test_inputs:
+                H, W = _shape(test_in)
+                pred = _clone(test_in)
+                all_known = True
+                for r in range(H):
+                    for c in range(W):
+                        k = _get_neighborhood(test_in, r, c, radius)
+                        if k not in resolved:
+                            all_known = False; break
+                        pred[r][c] = resolved[k]
+                    if not all_known:
+                        break
+                if not all_known:
+                    return None
+                results.append(pred)
+            return _make_result_list(ctx, results, self.name)
+
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 2. PaletteRemapInducerSolver
+#    Learns a global per-color mapping from training pairs.
+#    Only accepts if the mapping is consistent across all pairs AND non-trivial.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class PaletteRemapInducerSolver(BaseSolver):
+    name = "PaletteRemapInducerSolver"
+    priority = 10
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        mapping: dict[int, int] = {}
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            if _shape(inp) != _shape(out):
+                return None
+            H, W = _shape(inp)
+            for r in range(H):
+                for c in range(W):
+                    ci, co = inp[r][c], out[r][c]
+                    if ci in mapping:
+                        if mapping[ci] != co:
+                            return None
+                    else:
+                        mapping[ci] = co
+
+        if not mapping:
+            return None
+        # Must be non-trivial
+        if all(k == v for k, v in mapping.items()):
+            return None
+        # Must not be identity-like with only bg→bg entries changed
+        non_id = {k: v for k, v in mapping.items() if k != v}
+        if not non_id:
+            return None
+
+        # Validate
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            H, W = _shape(inp)
+            pred = [[mapping.get(inp[r][c], inp[r][c]) for c in range(W)] for r in range(H)]
+            if pred != out:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            H, W = _shape(test_in)
+            pred = [[mapping.get(test_in[r][c], test_in[r][c]) for c in range(W)] for r in range(H)]
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 3. FloodFillFromSeedSolver
+#    Detects a seed cell that determines: which region to fill and with what color.
+#    Tries: seed=rarest fg color, target=enclosed bg cells or connected component.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class FloodFillFromSeedSolver(BaseSolver):
+    name = "FloodFillFromSeedSolver"
+    priority = 25
+
+    def _learn_one(self, inp: Grid, out: Grid):
+        """Returns (seed_color, fill_color, mode) or None."""
+        if _shape(inp) != _shape(out):
+            return None
+        H, W = _shape(inp)
+        # Find changed cells
+        changed = [(r, c) for r in range(H) for c in range(W) if inp[r][c] != out[r][c]]
+        if not changed:
+            return None
+        changed_set = set(changed)
+
+        # New color in output at changed positions
+        new_colors = Counter(out[r][c] for r, c in changed)
+        orig_colors = Counter(inp[r][c] for r, c in changed)
+
+        if len(new_colors) != 1:
+            return None  # Changed cells must all become same color
+        fill_color = list(new_colors.keys())[0]
+
+        # All changed cells must come from same original color (or bg)
+        if len(orig_colors) != 1:
+            return None
+        orig_color = list(orig_colors.keys())[0]
+
+        # Find the seed: a non-bg cell NOT in changed_set, which is adjacent to changed region
+        # The seed should be a color different from orig_color and fill_color
+        bg = _bg(inp)
+
+        # Approach 1: Changed cells are all connected → it's a flood fill
+        # Check connectivity
+        start = changed[0]
+        visited = {start}
+        q = deque([start])
+        while q:
+            r, c = q.popleft()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if (nr,nc) in changed_set and (nr,nc) not in visited:
+                    visited.add((nr,nc))
+                    q.append((nr,nc))
+        if len(visited) != len(changed_set):
+            return None  # Not a connected region
+
+        return (orig_color, fill_color)
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        learned = []
+        for p in pairs:
+            r = self._learn_one(p["input"], p["output"])
+            if r is None:
+                return None
+            learned.append(r)
+
+        # Check consistency: same (orig_color, fill_color) across all pairs
+        if len(set(learned)) != 1:
+            return None
+        orig_color, fill_color = learned[0]
+
+        # Apply to test: find region of orig_color cells and flood-fill them with fill_color
+        # But we need to know WHICH region to fill... check training for a "pointer"
+        # Strategy: flood fill from every orig_color cell (entire connected component)
+        results = []
+        for test_in in ctx.test_inputs:
+            H, W = _shape(test_in)
+            result = _clone(test_in)
+            # Find all cells of orig_color and flood fill each component
+            visited = set()
+            for r in range(H):
+                for c in range(W):
+                    if test_in[r][c] == orig_color and (r,c) not in visited:
+                        comp = _bfs(test_in, r, c, passable={orig_color})
+                        visited.update(comp)
+                        for cr, cc in comp:
+                            result[cr][cc] = fill_color
+
+            # Validate: must be different from input
+            if result == test_in:
+                return None
+            results.append(result)
+
+        # Validate on training
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            H, W = _shape(inp)
+            pred = _clone(inp)
+            visited = set()
+            for r in range(H):
+                for c in range(W):
+                    if inp[r][c] == orig_color and (r,c) not in visited:
+                        comp = _bfs(inp, r, c, passable={orig_color})
+                        visited.update(comp)
+                        for cr, cc in comp:
+                            pred[cr][cc] = fill_color
+            if pred != out:
+                return None
+
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 4. FillEnclosedRegionsSolver
+#    Fills background cells that are enclosed (not reachable from border) with
+#    the dominant color of the surrounding border region.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class FillEnclosedRegionsSolver(BaseSolver):
+    name = "FillEnclosedRegionsSolver"
+    priority = 22
+
+    def _apply(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        bg = _bg(g)
+        interior = _interior_bg_cells(g, bg)
+        if not interior:
+            return g
+        # Group interior cells into connected components
+        visited = set()
+        result = _clone(g)
+        for (r0, c0) in interior:
+            if (r0, c0) in visited:
+                continue
+            # BFS within interior
+            comp = set()
+            q = deque([(r0,c0)])
+            comp.add((r0,c0))
+            while q:
+                r, c = q.popleft()
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if (nr,nc) in interior and (nr,nc) not in comp:
+                        comp.add((nr,nc))
+                        q.append((nr,nc))
+            visited.update(comp)
+            # Find bordering colors (adjacent non-bg cells)
+            border_colors = Counter()
+            for (r, c) in comp:
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < H and 0 <= nc < W and g[nr][nc] != bg and (nr,nc) not in interior:
+                        border_colors[g[nr][nc]] += 1
+            if border_colors:
+                fill_col = border_colors.most_common(1)[0][0]
+                for (r, c) in comp:
+                    result[r][c] = fill_col
+        return result
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # Same size I/O required
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Validate on training
+        for p in pairs:
+            pred = self._apply(p["input"])
+            if pred != p["output"]:
+                return None
+
+        results = [self._apply(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 5. RemoveOutliersSolver
+#    Removes isolated single-pixel (or small-cluster) foreground cells:
+#    pixels whose color doesn't match any neighbor. Background fills in.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class RemoveOutliersSolver(BaseSolver):
+    name = "RemoveOutliersSolver"
+    priority = 30
+
+    def _apply(self, g: Grid, max_size: int) -> Grid:
+        H, W = _shape(g)
+        bg = _bg(g)
+        comps = _connected_components(g, bg)
+        result = _clone(g)
+        for comp in comps:
+            if len(comp) <= max_size:
+                for (r, c) in comp:
+                    result[r][c] = bg
+        return result
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        for max_sz in (1, 2, 3):
+            ok = True
+            for p in pairs:
+                pred = self._apply(p["input"], max_sz)
+                if pred != p["output"]:
+                    ok = False
+                    break
+                # Output must have fewer fg cells than input
+                H, W = _shape(p["input"])
+                inp_nz = sum(1 for r in range(H) for c in range(W) if p["input"][r][c] != _bg(p["input"]))
+                out_nz = sum(1 for r in range(H) for c in range(W) if p["output"][r][c] != _bg(p["output"]))
+                if out_nz >= inp_nz:
+                    ok = False
+                    break
+            if ok:
+                results = [self._apply(t, max_sz) for t in ctx.test_inputs]
+                return _make_result_list(ctx, results, self.name)
+
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 6. ObjectRecolorBySizeSolver
+#    Recolors connected components based on their size rank.
+#    Largest component → color A, second largest → color B, etc.
+#    Learns the rank→color mapping from training pairs.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ObjectRecolorBySizeSolver(BaseSolver):
+    name = "ObjectRecolorBySizeSolver"
+    priority = 28
+
+    def _extract_rank_map(self, inp: Grid, out: Grid):
+        """Returns rank→output_color mapping, or None."""
+        if _shape(inp) != _shape(out):
+            return None
+        bg = _bg(inp)
+        comps = sorted(_connected_components(inp, bg), key=lambda c: len(c), reverse=True)
+        if len(comps) < 2:
+            return None
+        rank_map = {}
+        for rank, comp in enumerate(comps):
+            # All cells of this component must have the same output color
+            out_colors = set(out[r][c] for r, c in comp)
+            if len(out_colors) != 1:
+                return None
+            rank_map[rank] = list(out_colors)[0]
+        return rank_map
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn rank→color from first pair
+        rank_map = self._extract_rank_map(pairs[0]["input"], pairs[0]["output"])
+        if not rank_map:
+            return None
+        # Must actually recolor (not identity)
+        if all(pairs[0]["input"][r][c] == pairs[0]["output"][r][c]
+               for r in range(len(pairs[0]["input"])) for c in range(len(pairs[0]["input"][0]))):
+            return None
+
+        # Validate on all training pairs
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = sorted(_connected_components(inp, bg), key=lambda c: len(c), reverse=True)
+            pred = _clone(inp)
+            for rank, comp in enumerate(comps):
+                col = rank_map.get(rank)
+                if col is None:
+                    # Use last known rank color for overflow
+                    col = rank_map.get(len(rank_map)-1, bg)
+                for r, c in comp:
+                    pred[r][c] = col
+            if pred != out:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            bg = _bg(test_in)
+            comps = sorted(_connected_components(test_in, bg), key=lambda c: len(c), reverse=True)
+            pred = _clone(test_in)
+            for rank, comp in enumerate(comps):
+                col = rank_map.get(rank)
+                if col is None:
+                    col = rank_map.get(len(rank_map)-1, bg)
+                for r, c in comp:
+                    pred[r][c] = col
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 7. ObjectRecolorByEnclosedSolver
+#    Objects that enclose interior holes get a different color than those that don't.
+#    Learns: has_holes → output_color.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ObjectRecolorByEnclosedSolver(BaseSolver):
+    name = "ObjectRecolorByEnclosedSolver"
+    priority = 29
+
+    def _has_holes(self, g: Grid, comp: set, bg: int) -> bool:
+        """Does this component enclose any interior bg cells?"""
+        H, W = _shape(g)
+        # Temporarily mark comp as a barrier; check if any bg cells enclosed
+        temp = _clone(g)
+        temp_bg_reached = set()
+        q = deque()
+        visited = set()
+        for r in range(H):
+            for c in range(W):
+                if _is_border_cell(r, c, H, W) and temp[r][c] == bg:
+                    if (r,c) not in visited:
+                        visited.add((r,c))
+                        q.append((r,c))
+        while q:
+            r, c = q.popleft()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W and (nr,nc) not in visited and temp[nr][nc] == bg:
+                    visited.add((nr,nc))
+                    q.append((nr,nc))
+        # Any bg cell not in visited and adjacent to comp?
+        comp_adj_bg = set()
+        for (r, c) in comp:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W and temp[nr][nc] == bg and (nr,nc) not in visited:
+                    comp_adj_bg.add((nr,nc))
+        return len(comp_adj_bg) > 0
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn: component has_holes → output_color
+        hole_color = None
+        no_hole_color = None
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            for comp in comps:
+                has_h = self._has_holes(inp, comp, bg)
+                r0, c0 = next(iter(comp))
+                out_cols = set(out[r][c] for r, c in comp)
+                if len(out_cols) != 1:
+                    return None
+                out_col = list(out_cols)[0]
+                if has_h:
+                    if hole_color is None:
+                        hole_color = out_col
+                    elif hole_color != out_col:
+                        return None
+                else:
+                    if no_hole_color is None:
+                        no_hole_color = out_col
+                    elif no_hole_color != out_col:
+                        return None
+
+        if hole_color is None or no_hole_color is None:
+            return None
+        if hole_color == no_hole_color:
+            return None
+
+        # Validate
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            pred = _clone(inp)
+            for comp in comps:
+                has_h = self._has_holes(inp, comp, bg)
+                col = hole_color if has_h else no_hole_color
+                for r, c in comp:
+                    pred[r][c] = col
+            if pred != out:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            bg = _bg(test_in)
+            comps = _connected_components(test_in, bg)
+            pred = _clone(test_in)
+            for comp in comps:
+                has_h = self._has_holes(test_in, comp, bg)
+                col = hole_color if has_h else no_hole_color
+                for r, c in comp:
+                    pred[r][c] = col
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 8. SymmetryCompletionInducerSolver
+#    Detects which symmetry axis makes the output perfectly symmetric.
+#    Tries: horizontal, vertical, diagonal, anti-diagonal.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class SymmetryCompletionInducerSolver(BaseSolver):
+    name = "SymmetryCompletionInducerSolver"
+    priority = 32
+
+    def _complete_h(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        bg = _bg(g)
+        res = _clone(g)
+        for r in range(H):
+            for c in range(W):
+                mr = r
+                mc = W - 1 - c
+                if res[r][c] == bg and res[mr][mc] != bg:
+                    res[r][c] = res[mr][mc]
+                elif res[mr][mc] == bg and res[r][c] != bg:
+                    res[mr][mc] = res[r][c]
+        return res
+
+    def _complete_v(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        bg = _bg(g)
+        res = _clone(g)
+        for r in range(H):
+            for c in range(W):
+                mr = H - 1 - r
+                if res[r][c] == bg and res[mr][c] != bg:
+                    res[r][c] = res[mr][c]
+                elif res[mr][c] == bg and res[r][c] != bg:
+                    res[mr][c] = res[r][c]
+        return res
+
+    def _complete_diag(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        if H != W:
+            return g
+        bg = _bg(g)
+        res = _clone(g)
+        for r in range(H):
+            for c in range(W):
+                if res[r][c] == bg and res[c][r] != bg:
+                    res[r][c] = res[c][r]
+                elif res[c][r] == bg and res[r][c] != bg:
+                    res[c][r] = res[r][c]
+        return res
+
+    def _complete_antidiag(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        if H != W:
+            return g
+        bg = _bg(g)
+        res = _clone(g)
+        for r in range(H):
+            for c in range(W):
+                mr, mc = W-1-c, H-1-r
+                if res[r][c] == bg and res[mr][mc] != bg:
+                    res[r][c] = res[mr][mc]
+                elif res[mr][mc] == bg and res[r][c] != bg:
+                    res[mr][mc] = res[r][c]
+        return res
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        for fn in (self._complete_h, self._complete_v, self._complete_diag, self._complete_antidiag):
+            ok = True
+            for p in pairs:
+                pred = fn(p["input"])
+                if pred != p["output"]:
+                    ok = False
+                    break
+            if ok:
+                results = [fn(t) for t in ctx.test_inputs]
+                if any(r != t for r, t in zip(results, ctx.test_inputs)):
+                    return _make_result_list(ctx, results, self.name)
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 9. SeparatorZoneFillInducerSolver
+#    Detects separator lines (full rows/columns of one color), divides grid into
+#    zones, learns the fill-color rule for each zone from training examples.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class SeparatorZoneFillInducerSolver(BaseSolver):
+    name = "SeparatorZoneFillInducerSolver"
+    priority = 35
+
+    def _find_separators(self, g: Grid):
+        H, W = _shape(g)
+        row_seps = [r for r in range(H) if len(set(g[r])) == 1]
+        col_seps = [c for c in range(W) if len(set(g[r][c] for r in range(H))) == 1]
+        return row_seps, col_seps
+
+    def _get_zones(self, H: int, W: int, row_seps: list, col_seps: list):
+        rs = sorted(set([-1] + row_seps + [H]))
+        cs = sorted(set([-1] + col_seps + [W]))
+        zones = []
+        for i in range(len(rs)-1):
+            for j in range(len(cs)-1):
+                r0, r1 = rs[i]+1, rs[i+1]
+                c0, c1 = cs[j]+1, cs[j+1]
+                if r0 < r1 and c0 < c1:
+                    zones.append((r0, r1, c0, c1))
+        return zones
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn: position → fill color, from first pair
+        p0 = pairs[0]
+        row_seps, col_seps = self._find_separators(p0["input"])
+        if not row_seps and not col_seps:
+            return None
+
+        H, W = _shape(p0["input"])
+        zones = self._get_zones(H, W, row_seps, col_seps)
+        if len(zones) < 2:
+            return None
+
+        # Learn zone→output_color from training
+        zone_color_rule = {}  # zone_idx → output_color
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            rs, cs = self._find_separators(inp)
+            H2, W2 = _shape(inp)
+            zones2 = self._get_zones(H2, W2, rs, cs)
+            for zi, (r0, r1, c0, c1) in enumerate(zones2):
+                zone_out_colors = Counter(out[r][c] for r in range(r0,r1) for c in range(c0,c1))
+                if not zone_out_colors:
+                    continue
+                fill_col = zone_out_colors.most_common(1)[0][0]
+                if zi in zone_color_rule:
+                    if zone_color_rule[zi] != fill_col:
+                        return None
+                else:
+                    zone_color_rule[zi] = fill_col
+
+        if not zone_color_rule:
+            return None
+
+        # Validate
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            rs, cs = self._find_separators(inp)
+            H2, W2 = _shape(inp)
+            zones2 = self._get_zones(H2, W2, rs, cs)
+            pred = _clone(inp)
+            for zi, (r0, r1, c0, c1) in enumerate(zones2):
+                col = zone_color_rule.get(zi)
+                if col is None:
+                    return None
+                for r in range(r0, r1):
+                    for c in range(c0, c1):
+                        pred[r][c] = col
+            if pred != out:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            rs, cs = self._find_separators(test_in)
+            H2, W2 = _shape(test_in)
+            zones2 = self._get_zones(H2, W2, rs, cs)
+            pred = _clone(test_in)
+            for zi, (r0, r1, c0, c1) in enumerate(zones2):
+                col = zone_color_rule.get(zi)
+                if col is not None:
+                    for r in range(r0, r1):
+                        for c in range(c0, c1):
+                            pred[r][c] = col
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 10. ExtractLargestObjectSolver
+#     Output = bounding box crop of the largest non-background connected component.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ExtractLargestObjectSolver(BaseSolver):
+    name = "ExtractLargestObjectSolver"
+    priority = 40
+
+    def _apply(self, g: Grid) -> Optional[Grid]:
+        bg = _bg(g)
+        comps = _connected_components(g, bg)
+        if not comps:
+            return None
+        largest = max(comps, key=lambda c: len(c))
+        rows = [r for r, c in largest]
+        cols = [c for r, c in largest]
+        r0, r1 = min(rows), max(rows)+1
+        c0, c1 = min(cols), max(cols)+1
+        H, W = _shape(g)
+        return [g[r][c0:c1] for r in range(r0, r1)]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # Output must be smaller than input
+        for p in pairs:
+            ih, iw = _shape(p["input"])
+            oh, ow = _shape(p["output"])
+            if oh * ow >= ih * iw:
+                return None
+
+        for p in pairs:
+            pred = self._apply(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            r = self._apply(test_in)
+            if r is None:
+                return None
+            results.append(r)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 11. ColorMapFromIntersectionSolver
+#     Detects lines of two colors; marks their intersections with a third color.
+#     Generalizes CrossIntersectionFillSolver.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ColorMapFromIntersectionSolver(BaseSolver):
+    name = "ColorMapFromIntersectionSolver"
+    priority = 38
+
+    def _find_lines(self, g: Grid):
+        """Find colors that appear in full rows or full columns."""
+        H, W = _shape(g)
+        row_colors = {}
+        for r in range(H):
+            unique = set(g[r])
+            if len(unique) == 1:
+                row_colors[r] = list(unique)[0]
+        col_colors = {}
+        for c in range(W):
+            unique = set(g[r][c] for r in range(H))
+            if len(unique) == 1:
+                col_colors[c] = list(unique)[0]
+        return row_colors, col_colors
+
+    def _apply(self, g: Grid, mark_color: int) -> Grid:
+        row_colors, col_colors = self._find_lines(g)
+        if not row_colors or not col_colors:
+            return g
+        result = _clone(g)
+        for r, rc in row_colors.items():
+            for c, cc in col_colors.items():
+                if rc != cc:  # Different-colored lines intersect
+                    result[r][c] = mark_color
+        return result
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn the mark color
+        mark_color = None
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            changed = [(r, c, out[r][c]) for r in range(len(inp)) for c in range(len(inp[0]))
+                       if inp[r][c] != out[r][c]]
+            if not changed:
+                return None
+            colors = set(co for _, _, co in changed)
+            if len(colors) != 1:
+                return None
+            mc = list(colors)[0]
+            if mark_color is None:
+                mark_color = mc
+            elif mark_color != mc:
+                return None
+
+        if mark_color is None:
+            return None
+
+        for p in pairs:
+            pred = self._apply(p["input"], mark_color)
+            if pred != p["output"]:
+                return None
+
+        results = [self._apply(t, mark_color) for t in ctx.test_inputs]
+        if any(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 12. NoiseFilterObjectsSolver
+#     Keep only the connected components with size ≥ threshold (learned from training).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class NoiseFilterObjectsSolver(BaseSolver):
+    name = "NoiseFilterObjectsSolver"
+    priority = 31
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn min_size threshold
+        for min_size in range(2, 10):
+            ok = True
+            for p in pairs:
+                inp, out = p["input"], p["output"]
+                bg = _bg(inp)
+                pred = _clone(inp)
+                for comp in _connected_components(inp, bg):
+                    if len(comp) < min_size:
+                        for r, c in comp:
+                            pred[r][c] = bg
+                if pred != out:
+                    ok = False
+                    break
+            if ok:
+                results = []
+                for test_in in ctx.test_inputs:
+                    bg = _bg(test_in)
+                    pred = _clone(test_in)
+                    for comp in _connected_components(test_in, bg):
+                        if len(comp) < min_size:
+                            for r, c in comp:
+                                pred[r][c] = bg
+                    results.append(pred)
+                if any(r == t for r, t in zip(results, ctx.test_inputs)):
+                    continue
+                return _make_result_list(ctx, results, self.name)
+
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 13. RegionCountOutputSolver
+#     Output = 1×1 grid whose value = number of distinct connected components.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class RegionCountOutputSolver(BaseSolver):
+    name = "RegionCountOutputSolver"
+    priority = 45
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # Output must be 1×1
+        for p in pairs:
+            if _shape(p["output"]) != (1, 1):
+                return None
+
+        for p in pairs:
+            inp = p["input"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            expected = p["output"][0][0]
+            # Try different counting strategies
+            if len(comps) == expected:
+                continue
+            # Try counting by non-bg unique colors
+            n_colors = len([c for c in set(inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))) if c != bg])
+            if n_colors == expected:
+                continue
+            return None
+
+        # Determine which strategy works
+        strategies = []
+        for p in pairs:
+            inp = p["input"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            expected = p["output"][0][0]
+            if len(comps) == expected:
+                strategies.append("n_comps")
+            else:
+                n_colors = len([c for c in set(inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))) if c != bg])
+                if n_colors == expected:
+                    strategies.append("n_colors")
+                else:
+                    return None
+
+        if len(set(strategies)) != 1:
+            return None
+        strat = strategies[0]
+
+        results = []
+        for test_in in ctx.test_inputs:
+            bg = _bg(test_in)
+            if strat == "n_comps":
+                comps = _connected_components(test_in, bg)
+                val = len(comps)
+            else:
+                val = len([c for c in set(test_in[r][c] for r in range(len(test_in)) for c in range(len(test_in[0]))) if c != bg])
+            results.append([[val]])
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 14. ObjectPropertyGridSolver
+#     Large grid with multiple framed objects → small grid of per-object values.
+#     Detects the "answer grid" pattern where each cell's value = property of object.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ObjectPropertyGridSolver(BaseSolver):
+    name = "ObjectPropertyGridSolver"
+    priority = 42
+
+    def _find_frame_regions(self, g: Grid, frame_color: int):
+        """Find interior regions of rectangles made of frame_color."""
+        H, W = _shape(g)
+        regions = []
+        # Find all rectangles made of frame_color
+        for r0 in range(H):
+            for c0 in range(W):
+                if g[r0][c0] != frame_color:
+                    continue
+                for r1 in range(r0+2, H):
+                    for c1 in range(c0+2, W):
+                        if g[r1][c1] != frame_color:
+                            continue
+                        # Check if top/bottom rows and left/right cols are all frame_color
+                        top_ok = all(g[r0][c] == frame_color for c in range(c0, c1+1))
+                        bot_ok = all(g[r1][c] == frame_color for c in range(c0, c1+1))
+                        lft_ok = all(g[r][c0] == frame_color for r in range(r0, r1+1))
+                        rgt_ok = all(g[r][c1] == frame_color for r in range(r0, r1+1))
+                        if top_ok and bot_ok and lft_ok and rgt_ok:
+                            interior = [(r,c) for r in range(r0+1,r1) for c in range(c0+1,c1)]
+                            regions.append(interior)
+        return regions
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        # Complex; skip for now if output has very different size
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            ih, iw = _shape(p["input"])
+            oh, ow = _shape(p["output"])
+            if oh * ow >= ih * iw * 0.5:
+                return None
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 15. HoleCountRecolorSolver
+#     Recolors objects by the number of enclosed holes.
+#     0 holes → color A, 1 hole → color B, 2 holes → color C, etc.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class HoleCountRecolorSolver(BaseSolver):
+    name = "HoleCountRecolorSolver"
+    priority = 33
+
+    def _count_holes(self, g: Grid, comp: set) -> int:
+        """Count enclosed interior background regions of this component."""
+        H, W = _shape(g)
+        bg = _bg(g)
+        # BFS from all border bg cells
+        visited = set()
+        q = deque()
+        for r in range(H):
+            for c in range(W):
+                if _is_border_cell(r, c, H, W) and g[r][c] == bg:
+                    if (r,c) not in visited:
+                        visited.add((r,c))
+                        q.append((r,c))
+        while q:
+            r, c = q.popleft()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W and (nr,nc) not in visited and g[nr][nc] == bg:
+                    visited.add((nr,nc))
+                    q.append((nr,nc))
+        # Count distinct interior bg components adjacent to comp
+        interior_bg = set()
+        for r, c in comp:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W and g[nr][nc] == bg and (nr,nc) not in visited:
+                    interior_bg.add((nr,nc))
+        if not interior_bg:
+            return 0
+        # Count connected components of interior bg
+        visited2 = set()
+        n_holes = 0
+        for (r0, c0) in interior_bg:
+            if (r0, c0) not in visited2:
+                n_holes += 1
+                q = deque([(r0,c0)])
+                visited2.add((r0,c0))
+                while q:
+                    r, c = q.popleft()
+                    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        nr, nc = r+dr, c+dc
+                        if (nr,nc) in interior_bg and (nr,nc) not in visited2:
+                            visited2.add((nr,nc))
+                            q.append((nr,nc))
+        return n_holes
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        hole_to_color: dict[int, int] = {}
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            if len(comps) < 2:
+                return None
+            for comp in comps:
+                n = self._count_holes(inp, comp)
+                out_cols = set(out[r][c] for r, c in comp)
+                if len(out_cols) != 1:
+                    return None
+                oc = list(out_cols)[0]
+                if n in hole_to_color:
+                    if hole_to_color[n] != oc:
+                        return None
+                else:
+                    hole_to_color[n] = oc
+
+        if not hole_to_color or len(hole_to_color) < 2:
+            return None
+
+        # Validate
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            pred = _clone(inp)
+            for comp in comps:
+                n = self._count_holes(inp, comp)
+                col = hole_to_color.get(n)
+                if col is None:
+                    return None
+                for r, c in comp:
+                    pred[r][c] = col
+            if pred != out:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            bg = _bg(test_in)
+            comps = _connected_components(test_in, bg)
+            pred = _clone(test_in)
+            for comp in comps:
+                n = self._count_holes(test_in, comp)
+                col = hole_to_color.get(n)
+                if col is None:
+                    return None
+                for r, c in comp:
+                    pred[r][c] = col
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 16. DiagonalFloodFillSolver
+#     Like FloodFillFromSeedSolver but uses 8-connectivity.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class DiagonalFloodFillSolver(BaseSolver):
+    name = "DiagonalFloodFillSolver"
+    priority = 26
+
+    def _bfs8(self, g: Grid, sr: int, sc: int, color: int) -> set:
+        H, W = _shape(g)
+        visited = {(sr, sc)}
+        q = deque([(sr, sc)])
+        while q:
+            r, c = q.popleft()
+            for dr in [-1,0,1]:
+                for dc in [-1,0,1]:
+                    if dr == 0 and dc == 0:
+                        continue
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < H and 0 <= nc < W and (nr,nc) not in visited and g[nr][nc] == color:
+                        visited.add((nr,nc))
+                        q.append((nr,nc))
+        return visited
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        learned = []
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            if _shape(inp) != _shape(out):
+                return None
+            H, W = _shape(inp)
+            changed = [(r, c) for r in range(H) for c in range(W) if inp[r][c] != out[r][c]]
+            if not changed:
+                return None
+            new_colors = Counter(out[r][c] for r, c in changed)
+            orig_colors = Counter(inp[r][c] for r, c in changed)
+            if len(new_colors) != 1 or len(orig_colors) != 1:
+                return None
+            fill_color = list(new_colors.keys())[0]
+            orig_color = list(orig_colors.keys())[0]
+            learned.append((orig_color, fill_color))
+
+        if len(set(learned)) != 1:
+            return None
+        orig_color, fill_color = learned[0]
+
+        def apply_fn(g):
+            H, W = _shape(g)
+            result = _clone(g)
+            visited = set()
+            for r in range(H):
+                for c in range(W):
+                    if g[r][c] == orig_color and (r,c) not in visited:
+                        comp = self._bfs8(g, r, c, orig_color)
+                        visited.update(comp)
+                        for cr, cc in comp:
+                            result[cr][cc] = fill_color
+            return result
+
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 17. MirrorFillSolver
+#     Detects partial objects that should be reflected to fill out their mirror.
+#     Tries h-flip, v-flip, and rot-180. Applies when one half is empty (bg).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class MirrorFillSolver(BaseSolver):
+    name = "MirrorFillSolver"
+    priority = 36
+
+    def _flip_h(self, g: Grid) -> Grid:
+        return [row[::-1] for row in g]
+
+    def _flip_v(self, g: Grid) -> Grid:
+        return g[::-1]
+
+    def _overlay_non_bg(self, base: Grid, overlay: Grid, bg: int) -> Grid:
+        H, W = _shape(base)
+        result = _clone(base)
+        for r in range(H):
+            for c in range(W):
+                if result[r][c] == bg and overlay[r][c] != bg:
+                    result[r][c] = overlay[r][c]
+        return result
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        for fn in (self._flip_h, self._flip_v):
+            ok = True
+            for p in pairs:
+                inp, out = p["input"], p["output"]
+                bg = _bg(inp)
+                pred = self._overlay_non_bg(inp, fn(inp), bg)
+                if pred != out:
+                    ok = False
+                    break
+            if ok:
+                results = []
+                for test_in in ctx.test_inputs:
+                    bg = _bg(test_in)
+                    pred = self._overlay_non_bg(test_in, fn(test_in), bg)
+                    results.append(pred)
+                if any(r != t for r, t in zip(results, ctx.test_inputs)):
+                    return _make_result_list(ctx, results, self.name)
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 18. ColorFreqReplaceSolver
+#     Replace the rarest-colored cells with the most-frequent color.
+#     Generalizable: learns rank→target from training pairs.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ColorFreqReplaceSolver(BaseSolver):
+    name = "ColorFreqReplaceSolver"
+    priority = 34
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn: which color gets replaced by which
+        rule = {}  # src_color → dst_color
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            H, W = _shape(inp)
+            for r in range(H):
+                for c in range(W):
+                    if inp[r][c] != out[r][c]:
+                        src, dst = inp[r][c], out[r][c]
+                        if src in rule and rule[src] != dst:
+                            return None
+                        rule[src] = dst
+
+        if not rule:
+            return None
+
+        def apply_fn(g):
+            H, W = _shape(g)
+            return [[rule.get(g[r][c], g[r][c]) for c in range(W)] for r in range(H)]
+
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 19. CellNeighborMajorityColorSolver
+#     Each cell takes the majority color among its 4-neighbors.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class CellNeighborMajorityColorSolver(BaseSolver):
+    name = "CellNeighborMajorityColorSolver"
+    priority = 37
+
+    def _apply(self, g: Grid) -> Grid:
+        H, W = _shape(g)
+        result = _clone(g)
+        for r in range(H):
+            for c in range(W):
+                neighbors = []
+                for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < H and 0 <= nc < W:
+                        neighbors.append(g[nr][nc])
+                if neighbors:
+                    majority = Counter(neighbors).most_common(1)[0][0]
+                    result[r][c] = majority
+        return result
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+            if self._apply(p["input"]) != p["output"]:
+                return None
+
+        results = [self._apply(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 20. FrameInteriorColorSolver
+#     Detects frames (rectangular borders) and fills their interior with a
+#     learned color (could be the frame color, or a different specific color).
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class FrameInteriorColorSolver(BaseSolver):
+    name = "FrameInteriorColorSolver"
+    priority = 39
+
+    def _find_frames(self, g: Grid):
+        """Return list of (r0, c0, r1, c1, frame_color)."""
+        H, W = _shape(g)
+        frames = []
+        for r0 in range(H-2):
+            for c0 in range(W-2):
+                for r1 in range(r0+2, H):
+                    for c1 in range(c0+2, W):
+                        fc = g[r0][c0]
+                        if fc == 0:
+                            continue
+                        top = all(g[r0][c] == fc for c in range(c0, c1+1))
+                        bot = all(g[r1][c] == fc for c in range(c0, c1+1))
+                        lft = all(g[r][c0] == fc for r in range(r0, r1+1))
+                        rgt = all(g[r][c1] == fc for r in range(r0, r1+1))
+                        if top and bot and lft and rgt:
+                            frames.append((r0, c0, r1, c1, fc))
+        return frames
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        fill_color = None
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            frames = self._find_frames(inp)
+            if not frames:
+                return None
+            for r0, c0, r1, c1, fc in frames:
+                interior_out = [out[r][c] for r in range(r0+1, r1) for c in range(c0+1, c1)]
+                if not interior_out:
+                    continue
+                interior_colors = set(interior_out)
+                if len(interior_colors) == 1:
+                    ic = list(interior_colors)[0]
+                    if fill_color is None:
+                        fill_color = ic
+                    elif fill_color != ic:
+                        return None
+                else:
+                    return None
+
+        if fill_color is None:
+            return None
+
+        def apply_fn(g):
+            frames = self._find_frames(g)
+            result = _clone(g)
+            for r0, c0, r1, c1, fc in frames:
+                for r in range(r0+1, r1):
+                    for c in range(c0+1, c1):
+                        result[r][c] = fill_color
+            return result
+
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 21. RowColPatternInducerSolver
+#     Induces a per-row or per-column operation that transforms input.
+#     Tries: row rotation, column rotation, row/col permutation.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class RowColPatternInducerSolver(BaseSolver):
+    name = "RowColPatternInducerSolver"
+    priority = 41
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Try: each row in output is the input row rotated by some consistent amount
+        _H0, _W0 = _shape(pairs[0]["input"])
+
+        def try_row_rotation():
+            row_shifts = []
+            for p in pairs:
+                inp, out = p["input"], p["output"]
+                pH, pW = _shape(inp)
+                if (pH, pW) != (_H0, _W0):
+                    return None
+                shifts = []
+                for r in range(pH):
+                    if r >= len(out):
+                        return None
+                    found = False
+                    for shift in range(pW):
+                        rotated = inp[r][shift:] + inp[r][:shift]
+                        if rotated == out[r]:
+                            shifts.append(shift)
+                            found = True
+                            break
+                    if not found:
+                        return None
+                row_shifts.append(shifts)
+            if len(row_shifts) < 1:
+                return None
+            ref = row_shifts[0]
+            for rs in row_shifts[1:]:
+                if rs != ref:
+                    return None
+            return ref
+
+        shifts = try_row_rotation()
+        if shifts:
+            def apply_fn(g):
+                result = []
+                for r in range(len(g)):
+                    shift = shifts[r] if r < len(shifts) else 0
+                    result.append(g[r][shift:] + g[r][:shift])
+                return result
+
+            for p in pairs:
+                if apply_fn(p["input"]) != p["output"]:
+                    return None
+
+            results = [apply_fn(t) for t in ctx.test_inputs]
+            if any(r != t for r, t in zip(results, ctx.test_inputs)):
+                return _make_result_list(ctx, results, self.name)
+
+        return None
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 22. ColorByAreaSolver
+#     Assigns each connected component a color based on its area (cell count).
+#     Learns: area_value → color, or: area_rank → color.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ColorByAreaSolver(BaseSolver):
+    name = "ColorByAreaSolver"
+    priority = 27
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        # Same-size I/O required
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn: area → output_color mapping
+        area_to_color: dict[int, int] = {}
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            for comp in comps:
+                area = len(comp)
+                out_cols = set(out[r][c] for r, c in comp)
+                if len(out_cols) != 1:
+                    return None
+                oc = list(out_cols)[0]
+                if area in area_to_color:
+                    if area_to_color[area] != oc:
+                        return None
+                else:
+                    area_to_color[area] = oc
+
+        if not area_to_color or all(k == v for k, v in area_to_color.items()):
+            return None
+
+        def apply_fn(g):
+            bg = _bg(g)
+            comps = _connected_components(g, bg)
+            pred = _clone(g)
+            for comp in comps:
+                area = len(comp)
+                col = area_to_color.get(area)
+                if col is None:
+                    return None
+                for r, c in comp:
+                    pred[r][c] = col
+            return pred
+
+        for p in pairs:
+            pred = apply_fn(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+
+        results = []
+        for test_in in ctx.test_inputs:
+            r = apply_fn(test_in)
+            if r is None:
+                return None
+            results.append(r)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 23. PerimeterRecolorSolver
+#     Recolors the border (perimeter) cells of each connected object.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class PerimeterRecolorSolver(BaseSolver):
+    name = "PerimeterRecolorSolver"
+    priority = 43
+
+    def _get_perimeter(self, g: Grid, comp: set) -> set:
+        H, W = _shape(g)
+        perimeter = set()
+        for (r, c) in comp:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if not (0 <= nr < H and 0 <= nc < W) or g[nr][nc] != g[r][c]:
+                    perimeter.add((r, c))
+                    break
+        return perimeter
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn: interior stays or perimeter changes
+        perim_color = None
+        interior_preserves = None
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+            comps = _connected_components(inp, bg)
+            for comp in comps:
+                if len(comp) < 4:
+                    continue
+                perim = self._get_perimeter(inp, comp)
+                interior = comp - perim
+                if not interior:
+                    continue
+                # Check if perimeter cells all become same color
+                perim_out_colors = set(out[r][c] for r, c in perim)
+                if len(perim_out_colors) != 1:
+                    return None
+                pc = list(perim_out_colors)[0]
+                if perim_color is None:
+                    perim_color = pc
+                elif perim_color != pc:
+                    return None
+                # Interior stays unchanged
+                interior_same = all(out[r][c] == inp[r][c] for r, c in interior)
+                if interior_preserves is None:
+                    interior_preserves = interior_same
+                elif interior_preserves != interior_same:
+                    return None
+
+        if perim_color is None:
+            return None
+
+        def apply_fn(g):
+            bg = _bg(g)
+            comps = _connected_components(g, bg)
+            pred = _clone(g)
+            for comp in comps:
+                perim = self._get_perimeter(g, comp)
+                for r, c in perim:
+                    pred[r][c] = perim_color
+            return pred
+
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 24. UniformFillSolver
+#     All non-bg cells become the same target color (learned from training).
+#     Simple but handles a whole class of recoloring tasks.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class UniformFillSolver(BaseSolver):
+    name = "UniformFillSolver"
+    priority = 44
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        # Learn target color
+        target_color = None
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            H, W = _shape(inp)
+            bg = _bg(inp)
+            out_fg = set(out[r][c] for r in range(H) for c in range(W) if inp[r][c] != bg)
+            if len(out_fg) != 1:
+                return None
+            tc = list(out_fg)[0]
+            if target_color is None:
+                target_color = tc
+            elif target_color != tc:
+                return None
+
+        if target_color is None:
+            return None
+
+        def apply_fn(g):
+            H, W = _shape(g)
+            bg = _bg(g)
+            return [[target_color if g[r][c] != bg else bg for c in range(W)] for r in range(H)]
+
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if all(r == t for r, t in zip(results, ctx.test_inputs)):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 25. CropNonBackgroundSolver
+#     SHRINK bucket: output = bounding box of all non-background pixels.
+#     Background = most-frequent color in input.
+#     Handles rectangular and irregular foreground objects.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class CropNonBackgroundSolver(BaseSolver):
+    name = "CropNonBackgroundSolver"
+    priority = 50
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        def _crop_bbox(g: Grid) -> Optional[Grid]:
+            H, W = _shape(g)
+            bg = _bg(g)
+            rows = [r for r in range(H) if any(g[r][c] != bg for c in range(W))]
+            cols = [c for c in range(W) if any(g[r][c] != bg for r in range(H))]
+            if not rows or not cols:
+                return None
+            r0, r1 = rows[0], rows[-1]
+            c0, c1 = cols[0], cols[-1]
+            if r0 == 0 and r1 == H - 1 and c0 == 0 and c1 == W - 1:
+                return None  # no actual shrink
+            return [g[r][c0:c1+1] for r in range(r0, r1+1)]
+
+        # Validate on all training pairs
+        for p in pairs:
+            expected = _crop_bbox(p["input"])
+            if expected is None:
+                return None
+            if expected != p["output"]:
+                return None
+
+        results = [_crop_bbox(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 26. ExtractFrameInteriorSolver
+#     SHRINK bucket: the input contains a solid rectangular frame drawn in a
+#     single learned border color.  Output = interior content (cells inside
+#     the frame, excluding the frame row/column themselves).
+#     Handles any border color; learns it from training pairs.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ExtractFrameInteriorSolver(BaseSolver):
+    name = "ExtractFrameInteriorSolver"
+    priority = 51
+
+    @staticmethod
+    def _find_unique_frame(g: Grid) -> Optional[tuple]:
+        """Find the unique frame: a color whose ALL occurrences form exactly
+        the rectangular border of some axis-aligned rectangle.
+        Returns (border_color, r0, c0, r1, c1) or None."""
+        H, W = _shape(g)
+        from collections import defaultdict
+        color_cells: dict = defaultdict(list)
+        for r in range(H):
+            for c in range(W):
+                v = g[r][c]
+                if v != 0:
+                    color_cells[v].append((r, c))
+
+        for color, cells in color_cells.items():
+            rs = [r for r, _ in cells]
+            cs = [c for _, c in cells]
+            r0, r1 = min(rs), max(rs)
+            c0, c1 = min(cs), max(cs)
+            if r1 - r0 < 2 or c1 - c0 < 2:
+                continue
+            # Build the expected border set
+            expected: set = set()
+            for cc in range(c0, c1 + 1):
+                expected.add((r0, cc))
+                expected.add((r1, cc))
+            for rr in range(r0 + 1, r1):
+                expected.add((rr, c0))
+                expected.add((rr, c1))
+            # All occurrences of this color must form exactly this border
+            if set(cells) == expected:
+                return (color, r0, c0, r1, c1)
+        return None
+
+    @staticmethod
+    def _interior(g: Grid, r0: int, c0: int, r1: int, c1: int) -> Grid:
+        return [list(g[r][c0 + 1:c1]) for r in range(r0 + 1, r1)]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            oh, ow = _shape(out)
+            ih, iw = _shape(inp)
+            if oh >= ih or ow >= iw:
+                return None  # output must be strictly smaller
+            frame = self._find_unique_frame(inp)
+            if frame is None:
+                return None
+            _, r0, c0, r1, c1 = frame
+            if self._interior(inp, r0, c0, r1, c1) != out:
+                return None
+
+        results = []
+        for t in ctx.test_inputs:
+            frame = self._find_unique_frame(t)
+            if frame is None:
+                return None
+            _, r0, c0, r1, c1 = frame
+            results.append(self._interior(t, r0, c0, r1, c1))
+
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 27. ConnectedComponentRelabelSolver
+#     NEW_COLORS_APPEAR bucket: connected components of a target color are
+#     ranked by descending pixel count; each rank maps to a distinct output
+#     color.  Learns the rank→color mapping from training pairs.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class ConnectedComponentRelabelSolver(BaseSolver):
+    name = "ConnectedComponentRelabelSolver"
+    priority = 52
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs or len(pairs) < 1:
+            return None
+
+        # All training pairs must have same shape in→out
+        for p in pairs:
+            if _shape(p["input"]) != _shape(p["output"]):
+                return None
+
+        rank_to_color: Optional[dict] = None
+        target_color: Optional[int] = None
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            bg = _bg(inp)
+
+            # Try each color present in the input (excluding background)
+            for tc in _unique(inp) - {bg}:
+                comps = _connected_components(inp, bg)
+                tc_comps = [c for c in comps if all(inp[r][cc] == tc for r, cc in c)]
+                if len(tc_comps) < 2:
+                    continue
+
+                # Rank by size descending
+                tc_comps.sort(key=lambda c: len(c), reverse=True)
+
+                # Build rank→output_color mapping
+                mapping: dict[int, int] = {}
+                valid = True
+                for rank, comp in enumerate(tc_comps):
+                    out_colors = {out[r][c] for r, c in comp}
+                    if len(out_colors) != 1:
+                        valid = False
+                        break
+                    mapping[rank] = out_colors.pop()
+                if not valid:
+                    continue
+
+                # Check target_color consistency
+                if target_color is None:
+                    target_color = tc
+                elif target_color != tc:
+                    continue
+
+                # Check rank_to_color consistency
+                if rank_to_color is None:
+                    rank_to_color = mapping
+                elif rank_to_color != mapping:
+                    valid = False
+
+                if valid and rank_to_color is not None and target_color == tc:
+                    break  # found valid tc for this pair
+            else:
+                return None  # no valid tc found for this pair
+
+        if rank_to_color is None or target_color is None:
+            return None
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            bg = _bg(g)
+            comps = _connected_components(g, bg)
+            tc_comps = [c for c in comps if all(g[r][cc] == target_color for r, cc in c)]
+            if not tc_comps:
+                return None
+            tc_comps.sort(key=lambda c: len(c), reverse=True)
+            pred = _clone(g)
+            for rank, comp in enumerate(tc_comps):
+                col = rank_to_color.get(rank)
+                if col is None:
+                    return None
+                for r, c in comp:
+                    pred[r][c] = col
+            return pred
+
+        # Validate on training pairs
+        for p in pairs:
+            if apply_fn(p["input"]) != p["output"]:
+                return None
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# 28. CrossExpansionSolver
+#     Pattern (task 0962bcdd): background color (most freq) fills the grid.
+#     One or more "cross" structures exist: a center seed_color pixel surrounded
+#     on all 4 orthogonal sides by the same arm_color (forming a + shape).
+#     The output expands each cross into a 5×5 star template:
+#       centre + diagonals (±1,±1) + double-diagonals (±2,±2) → seed_color
+#       orthogonals (±1,0),(0,±1) + double-orthogonals (±2,0),(0,±2) → arm_color
+#     All other cells remain background.
+# ══════════════════════════════════════════════════════════════════════════════
+
+@register_solver
+class CrossExpansionSolver(BaseSolver):
+    name = "CrossExpansionSolver"
+    priority = 53
+
+    # Star template: diagonal offsets → seed_color
+    DIAG_OFFSETS = [(0, 0),
+                    (-1, -1), (-1, 1), (1, -1), (1, 1),
+                    (-2, -2), (-2, 2), (2, -2), (2, 2)]
+    # Orthogonal offsets → arm_color
+    ORTH_OFFSETS = [(-1, 0), (1, 0), (0, -1), (0, 1),
+                    (-2, 0), (2, 0), (0, -2), (0, 2)]
+
+    @staticmethod
+    def _background(g: Grid) -> int:
+        """Most-frequent color."""
+        counts: dict[int, int] = {}
+        for row in g:
+            for v in row:
+                counts[v] = counts.get(v, 0) + 1
+        return max(counts, key=lambda k: counts[k])
+
+    def _find_crosses(self, g: Grid, bg: int) -> list[tuple[int, int, int, int]]:
+        """Return (r, c, seed_color, arm_color) for each valid cross centre."""
+        H, W = _shape(g)
+        result = []
+        for r in range(H):
+            for c in range(W):
+                cell = g[r][c]
+                if cell == bg:
+                    continue
+                # All 4 orthogonal neighbours must be in-bounds
+                nbrs = [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
+                if not all(0 <= nr < H and 0 <= nc < W for nr, nc in nbrs):
+                    continue
+                arm_set = {g[nr][nc] for nr, nc in nbrs}
+                if len(arm_set) == 1:
+                    arm_color = arm_set.pop()
+                    if arm_color != bg and arm_color != cell:
+                        result.append((r, c, cell, arm_color))
+        return result
+
+    def _apply_star(self, g: Grid,
+                    crosses: list[tuple[int,int,int,int]]) -> Grid:
+        H, W = _shape(g)
+        bg = self._background(g)
+        # Start with all-background
+        pred = [[bg]*W for _ in range(H)]
+        for r, c, seed_color, arm_color in crosses:
+            for dr, dc in self.DIAG_OFFSETS:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W:
+                    pred[nr][nc] = seed_color
+            for dr, dc in self.ORTH_OFFSETS:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < H and 0 <= nc < W:
+                    pred[nr][nc] = arm_color
+        return pred
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            if _shape(inp) != _shape(out):
+                return None
+
+            bg = self._background(inp)
+            crosses = self._find_crosses(inp, bg)
+            if not crosses:
+                return None
+
+            pred = self._apply_star(inp, crosses)
+            if pred != out:
+                return None
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            bg = self._background(g)
+            crosses = self._find_crosses(g, bg)
+            if not crosses:
+                return None
+            return self._apply_star(g, crosses)
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+# ---------------------------------------------------------------------------
+# LargestSolidRectColorSolver
+# Pattern: input is a noisy grid; one non-bg color forms the largest axis-
+#          aligned solid (all-same-color) rectangle.  The output is a constant
+#          fill of that color.  Tie-breaking: larger total cell count wins.
+# Targets: 3194b014, 445eab21 (and similar)
+# ---------------------------------------------------------------------------
+class LargestSolidRectColorSolver(BaseSolver):
+    """Find the non-bg color whose largest solid rectangle is maximal → constant-fill output."""
+    name = "LargestSolidRectColorSolver"
+    priority = 54
+
+    # ------------------------------------------------------------------ helpers
+    @staticmethod
+    def _largest_solid_rect(grid: Grid, color: int) -> int:
+        """Maximal-rectangle-in-histogram for cells matching *color*."""
+        rows, cols = _shape(grid)
+        hist = [0] * cols
+        best = 0
+        for r in range(rows):
+            for c in range(cols):
+                hist[c] = (hist[c] + 1) if grid[r][c] == color else 0
+            # max rect in this histogram row
+            stack: list[tuple[int, int]] = []
+            for c in range(cols + 1):
+                h = hist[c] if c < cols else 0
+                start = c
+                while stack and stack[-1][1] > h:
+                    sc, sh = stack.pop()
+                    best = max(best, sh * (c - sc))
+                    start = sc
+                stack.append((start, h))
+        return best
+
+    def _predict(self, inp: Grid) -> Optional[int]:
+        bg = _bg(inp)
+        from collections import Counter as _Counter
+        cnt = _Counter(c for row in inp for c in row)
+        non_bg = {c: cnt[c] for c in cnt if c != bg}
+        if not non_bg:
+            return None
+        areas = {c: self._largest_solid_rect(inp, c) for c in non_bg}
+        max_area = max(areas.values())
+        if max_area == 0:
+            return None
+        candidates = [c for c, a in areas.items() if a == max_area]
+        return max(candidates, key=lambda c: cnt[c])   # tie-break: most cells
+
+    # ------------------------------------------------------------------ solve
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        # All training output shapes must be identical (guards variable-output tasks)
+        out_shapes = [_shape(p["output"]) for p in pairs]
+        if len(set(out_shapes)) != 1:
+            return None
+        out_H, out_W = out_shapes[0]
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            # Output must be constant fill (all same color)
+            flat_out = set(c for row in out for c in row)
+            if len(flat_out) != 1:
+                return None
+            expected = next(iter(flat_out))
+            pred = self._predict(inp)
+            if pred != expected:
+                return None
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            color = self._predict(g)
+            if color is None:
+                return None
+            return [[color] * out_W for _ in range(out_H)]
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+# ---------------------------------------------------------------------------
+# LargerFrameColorSolver
+# Pattern: input contains exactly 2 non-bg colors, each forming a hollow
+#          rectangular frame (border only).  Output = constant fill of the
+#          color whose frame has the larger interior area.
+# Targets: 445eab21
+# ---------------------------------------------------------------------------
+class LargerFrameColorSolver(BaseSolver):
+    """Two hollow frames → output color of larger-interior frame."""
+    name = "LargerFrameColorSolver"
+    priority = 53
+
+    @staticmethod
+    def _frame_interior(grid: Grid, color: int) -> int:
+        """Return interior area if *color* forms a perfect hollow rectangle, else -1."""
+        rows, cols = _shape(grid)
+        cells = [(r, c) for r in range(rows) for c in range(cols)
+                 if grid[r][c] == color]
+        if not cells:
+            return -1
+        rr = [p[0] for p in cells]
+        cc = [p[1] for p in cells]
+        min_r, max_r = min(rr), max(rr)
+        min_c, max_c = min(cc), max(cc)
+        h, w = max_r - min_r + 1, max_c - min_c + 1
+        if h < 2 or w < 2:
+            return -1
+        # Build expected perimeter cell set
+        perimeter: set[tuple[int, int]] = set()
+        for c in range(min_c, max_c + 1):
+            perimeter.add((min_r, c))
+            perimeter.add((max_r, c))
+        for r in range(min_r, max_r + 1):
+            perimeter.add((r, min_c))
+            perimeter.add((r, max_c))
+        if set(cells) != perimeter:
+            return -1
+        return max(0, (h - 2) * (w - 2))
+
+    def _predict(self, inp: Grid) -> Optional[int]:
+        bg = _bg(inp)
+        from collections import Counter as _Counter
+        non_bg_colors = [c for c in set(v for row in inp for v in row) if c != bg]
+        areas: dict[int, int] = {}
+        for color in non_bg_colors:
+            ia = self._frame_interior(inp, color)
+            if ia < 0:
+                return None          # not a clean frame → task doesn't match
+            areas[color] = ia
+        if len(areas) < 2:
+            return None
+        return max(areas, key=lambda c: areas[c])
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            flat_out = set(v for row in out for v in row)
+            if len(flat_out) != 1:
+                return None
+            expected = next(iter(flat_out))
+            pred = self._predict(inp)
+            if pred is None or pred != expected:
+                return None
+
+        out_H, out_W = _shape(pairs[0]["output"])
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            color = self._predict(g)
+            if color is None:
+                return None
+            return [[color] * out_W for _ in range(out_H)]
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+# ---------------------------------------------------------------------------
+# CountCellsToRowSolver
+# Pattern: 3x3 (or small) input has N non-background cells all of same color.
+#          Output = 1×N constant-fill row of that color.
+# Targets: d631b094
+# ---------------------------------------------------------------------------
+class CountCellsToRowSolver(BaseSolver):
+    """Count non-bg cells → output 1×N row of that color."""
+    name = "CountCellsToRowSolver"
+    priority = 52
+
+    @staticmethod
+    def _predict_with_bg(inp: Grid, bg: int) -> Optional[tuple[int, int]]:
+        """Return (color, count) given explicit bg, or None."""
+        non_bg = [inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))
+                  if inp[r][c] != bg]
+        if not non_bg:
+            return None
+        colors = set(non_bg)
+        if len(colors) != 1:
+            return None  # multiple non-bg colors → different task
+        return (non_bg[0], len(non_bg))
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        # Determine consistent background from training inputs
+        bg = _bg(pairs[0]["input"])
+        for p in pairs:
+            if _bg(p["input"]) != bg:
+                return None  # inconsistent bg across training
+
+        for p in pairs:
+            inp, out = p["input"], p["output"]
+            result = self._predict_with_bg(inp, bg)
+            if result is None:
+                return None
+            color, count = result
+            # Output must be 1×count row of that color
+            if len(out) != 1 or len(out[0]) != count:
+                return None
+            if any(v != color for v in out[0]):
+                return None
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            result = self._predict_with_bg(g, bg)
+            if result is None:
+                return None
+            color, count = result
+            return [[color] * count]
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ShapeLookupSolver — 27a28665 pattern
+# 3×3 binary shape (non-bg=1, bg=0 as 9-tuple) → fixed output value from training
+# ---------------------------------------------------------------------------
+@register_solver
+class ShapeLookupSolver(BaseSolver):
+    """Map binary shape tuple from input grid → single output color (1×1 output).
+    
+    Pattern: each training pair has a small grid; compute bg, binarise all cells
+    (non-bg→1, bg→0), build a tuple key, map to the single output cell value.
+    Apply the same lookup to each test input.
+    """
+    name = "ShapeLookupSolver"
+    priority = 55
+
+    @staticmethod
+    def _grid_shape_key(g: Grid, bg: int) -> tuple:
+        return tuple(0 if v == bg else 1 for row in g for v in row)
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        # All outputs must be 1×1
+        for p in pairs:
+            if len(p["output"]) != 1 or len(p["output"][0]) != 1:
+                return None
+
+        # All inputs must have the same shape
+        H0, W0 = len(pairs[0]["input"]), len(pairs[0]["input"][0])
+        if any(len(p["input"]) != H0 or len(p["input"][0]) != W0 for p in pairs):
+            return None
+
+        # Build lookup from training pairs (per-pair bg detection)
+        lookup: dict[tuple, int] = {}
+        for p in pairs:
+            bg = _bg(p["input"])
+            key = self._grid_shape_key(p["input"], bg)
+            val = p["output"][0][0]
+            if key in lookup and lookup[key] != val:
+                return None  # ambiguous mapping
+            lookup[key] = val
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            if len(g) != H0 or len(g[0]) != W0:
+                return None
+            bg = _bg(g)
+            key = self._grid_shape_key(g, bg)
+            if key not in lookup:
+                return None
+            return [[lookup[key]]]
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# SingleComponentColorSolver — 1a2e2828 pattern
+# Output = unique non-bg color that has exactly 1 connected component (4-conn)
+# All other non-bg colors must have 2+ components. Output is 1×1.
+# ---------------------------------------------------------------------------
+@register_solver
+class SingleComponentColorSolver(BaseSolver):
+    """Find the unique non-bg color with exactly 1 connected component; output as 1×1."""
+    name = "SingleComponentColorSolver"
+    priority = 55
+
+    @staticmethod
+    def _count_components(g: Grid, color: int) -> int:
+        rows, cols = len(g), len(g[0])
+        visited = [[False]*cols for _ in range(rows)]
+        count = 0
+        for sr in range(rows):
+            for sc in range(cols):
+                if g[sr][sc] == color and not visited[sr][sc]:
+                    count += 1
+                    stack = [(sr, sc)]
+                    while stack:
+                        r, c = stack.pop()
+                        if visited[r][c]:
+                            continue
+                        visited[r][c] = True
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = r+dr, c+dc
+                            if 0 <= nr < rows and 0 <= nc < cols and g[nr][nc] == color and not visited[nr][nc]:
+                                stack.append((nr, nc))
+        return count
+
+    def _find_single_comp_color(self, g: Grid) -> Optional[int]:
+        bg = _bg(g)
+        rows, cols = len(g), len(g[0])
+        colors = set(g[r][c] for r in range(rows) for c in range(cols)) - {bg}
+        candidates = []
+        for c in colors:
+            if self._count_components(g, c) == 1:
+                candidates.append(c)
+        return candidates[0] if len(candidates) == 1 else None
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+
+        # All outputs must be 1×1
+        for p in pairs:
+            if len(p["output"]) != 1 or len(p["output"][0]) != 1:
+                return None
+
+        # Validate training pairs
+        for p in pairs:
+            found = self._find_single_comp_color(p["input"])
+            if found is None:
+                return None
+            if found != p["output"][0][0]:
+                return None
+
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            c = self._find_single_comp_color(g)
+            if c is None:
+                return None
+            return [[c]]
+
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# NoisyRegionColorSolver — de1cd16c pattern
+# Grid = several solid-color regions + one "noise" color (many scattered single pixels)
+# Output = the region that contains the most noise pixels (1×1 output)
+# ---------------------------------------------------------------------------
+@register_solver
+class NoisyRegionColorSolver(BaseSolver):
+    """Identify the solid region containing the most noise pixels; output its color (1×1).
+
+    Pattern:
+    - One color appears as many scattered single-pixel components (noise).
+    - All other colors each form exactly 1 large connected component (solid region).
+    - For each noise pixel, assign it to the surrounding solid-region color via neighbors.
+    - Output = the solid region that received the most noise pixels.
+    """
+    name = "NoisyRegionColorSolver"
+    priority = 55
+
+    @staticmethod
+    def _count_comps(g: Grid, color: int) -> int:
+        rows, cols = len(g), len(g[0])
+        vis = [[False]*cols for _ in range(rows)]
+        comps = 0
+        for sr in range(rows):
+            for sc in range(cols):
+                if g[sr][sc] == color and not vis[sr][sc]:
+                    comps += 1
+                    stack = [(sr, sc)]
+                    while stack:
+                        r, c = stack.pop()
+                        if vis[r][c]: continue
+                        vis[r][c] = True
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = r+dr, c+dc
+                            if 0<=nr<rows and 0<=nc<cols and g[nr][nc]==color and not vis[nr][nc]:
+                                stack.append((nr, nc))
+        return comps
+
+    def _find_noise_region(self, g: Grid) -> Optional[int]:
+        rows, cols = len(g), len(g[0])
+        all_colors = set(v for row in g for v in row)
+        if len(all_colors) < 3:
+            return None
+        comps = {c: self._count_comps(g, c) for c in all_colors}
+        # noise color = most fragmented (highest component count, must be > 1)
+        noise_color = max(all_colors, key=lambda c: comps[c])
+        if comps[noise_color] <= 1:
+            return None
+        # all other colors must form exactly 1 component
+        regions = [c for c in all_colors if c != noise_color and comps[c] == 1]
+        if not regions:
+            return None
+        # assign each noise pixel to surrounding region via neighbor vote
+        region_counts: dict[int, int] = {}
+        for r in range(rows):
+            for c in range(cols):
+                if g[r][c] == noise_color:
+                    nbrs = []
+                    for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                        nr, nc = r+dr, c+dc
+                        if 0<=nr<rows and 0<=nc<cols and g[nr][nc] != noise_color:
+                            nbrs.append(g[nr][nc])
+                    if nbrs:
+                        region = max(set(nbrs), key=nbrs.count)
+                        region_counts[region] = region_counts.get(region, 0) + 1
+        if not region_counts:
+            return None
+        return max(region_counts, key=region_counts.get)
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # All outputs must be 1×1
+        for p in pairs:
+            if len(p["output"]) != 1 or len(p["output"][0]) != 1:
+                return None
+        # Validate training pairs
+        for p in pairs:
+            found = self._find_noise_region(p["input"])
+            if found is None or found != p["output"][0][0]:
+                return None
+        # Apply to test
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            c = self._find_noise_region(g)
+            return [[c]] if c is not None else None
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RarestColorBBoxCropSolver
+# Rule: crop the input to the bounding box of the rarest (least-frequent)
+#       non-background color.  Covers tasks where a small-area "target" object
+#       defines the output region (e.g. 23b5c85d, c909285e, 0b148d64).
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class RarestColorBBoxCropSolver(BaseSolver):
+    """
+    Output = rectangular crop of input at the bounding box of the rarest
+    non-background color.
+    """
+    name = "RarestColorBBoxCropSolver"
+    priority = 56
+
+    @staticmethod
+    def _rarest_bbox(g: Grid) -> Optional[tuple]:
+        rows, cols = len(g), len(g[0])
+        flat = [v for row in g for v in row]
+        counts: dict[int, int] = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        non_bg = [(c, ct) for c, ct in counts.items() if c != bg]
+        if not non_bg:
+            return None
+        rarest_color = min(non_bg, key=lambda x: x[1])[0]
+        rrows = [r for r in range(rows) if any(g[r][c] == rarest_color for c in range(cols))]
+        rcols = [c for c in range(cols) if any(g[r][c] == rarest_color for r in range(rows))]
+        if not rrows or not rcols:
+            return None
+        return rrows[0], rcols[0], rrows[-1], rcols[-1]
+
+    def _validate(self, inp: Grid, out: Grid) -> bool:
+        bbox = self._rarest_bbox(inp)
+        if bbox is None:
+            return False
+        r0, c0, r1, c1 = bbox
+        crop = [inp[r][c0:c1+1] for r in range(r0, r1+1)]
+        return crop == out
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if not self._validate(p["input"], p["output"]):
+                return None
+        def apply_fn(g: Grid) -> Optional[Grid]:
+            bbox = self._rarest_bbox(g)
+            if bbox is None:
+                return None
+            r0, c0, r1, c1 = bbox
+            return [g[r][c0:c1+1] for r in range(r0, r1+1)]
+        results = [apply_fn(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ColorsFreqDescSolver
+# Rule: output is a single-column grid listing all non-background colors
+#       sorted by frequency descending.  Covers f8ff0b80 and similar tasks.
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class ColorsFreqDescSolver(BaseSolver):
+    """
+    Output = Nx1 column of all non-bg colors sorted by frequency descending.
+    """
+    name = "ColorsFreqDescSolver"
+    priority = 55
+
+    @staticmethod
+    def _predict(g: Grid) -> Optional[Grid]:
+        flat = [v for row in g for v in row]
+        counts: dict[int, int] = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        non_bg = sorted([(c, ct) for c, ct in counts.items() if c != bg],
+                        key=lambda x: -x[1])
+        if not non_bg:
+            return None
+        return [[c] for c, _ in non_bg]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # All outputs must be 1 column
+        for p in pairs:
+            if any(len(row) != 1 for row in p["output"]):
+                return None
+        # Validate training pairs
+        for p in pairs:
+            pred = self._predict(p["input"])
+            if pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ColorsExclMaxFreqSolver
+# Rule: same as ColorsFreqDescSolver but EXCLUDING the most frequent non-bg
+#       color.  Covers f8b3ba0a: 4 non-bg colors → output lists the 3 less-
+#       frequent ones in descending frequency order.
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class ColorsExclMaxFreqSolver(BaseSolver):
+    """
+    Output = Nx1 column of non-bg colors sorted by frequency descending,
+    with the most-frequent non-bg color excluded.
+    """
+    name = "ColorsExclMaxFreqSolver"
+    priority = 55
+
+    @staticmethod
+    def _predict(g: Grid) -> Optional[Grid]:
+        flat = [v for row in g for v in row]
+        counts: dict[int, int] = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        non_bg = sorted([(c, ct) for c, ct in counts.items() if c != bg],
+                        key=lambda x: -x[1])
+        if len(non_bg) < 2:
+            return None
+        # Skip first (most frequent)
+        remaining = non_bg[1:]
+        return [[c] for c, _ in remaining]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        # All outputs must be 1 column
+        for p in pairs:
+            if any(len(row) != 1 for row in p["output"]):
+                return None
+        # Validate training pairs
+        for p in pairs:
+            pred = self._predict(p["input"])
+            if pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TwoBlockConnectedSolver
+# Rule: Two distinct non-overlapping 2×2 blocks of the same non-bg color
+#       (block_color) exist; a second non-bg color (bridge_color) forms
+#       scattered cells. BFS from block_A through bridge_color cells; if
+#       block_B is reachable (a bridge cell is adjacent to block_B) →
+#       output = [[bridge_color]], else output = [[bg]].
+#       Generalizes over any color pair, not just 2 and 8.
+# Targets: 239be575
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class TwoBlockConnectedSolver(BaseSolver):
+    """
+    Output = [[bridge_color]] if two 2×2 blocks are connected via bridge cells,
+    else [[bg]].
+    """
+    name = "TwoBlockConnectedSolver"
+    priority = 57
+
+    @staticmethod
+    def _find_2x2_blocks(g: Grid, color: int) -> list:
+        rows, cols = len(g), len(g[0])
+        blocks = []
+        used: set = set()
+        for r in range(rows - 1):
+            for c in range(cols - 1):
+                if (g[r][c] == color and g[r+1][c] == color and
+                        g[r][c+1] == color and g[r+1][c+1] == color):
+                    cells = frozenset([(r,c),(r+1,c),(r,c+1),(r+1,c+1)])
+                    if not cells & used:
+                        blocks.append((r, c))
+                        used |= cells
+        return blocks
+
+    @staticmethod
+    def _bfs_connected(g: Grid, block_a_cells: list, bridge_color: int,
+                       block_b_cells: set) -> bool:
+        rows, cols = len(g), len(g[0])
+        visited: set = set()
+        queue = []
+        # Seed: bridge_color neighbors of block_A
+        for r, c in block_a_cells:
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if (0 <= nr < rows and 0 <= nc < cols and
+                        g[nr][nc] == bridge_color and (nr,nc) not in visited):
+                    visited.add((nr,nc))
+                    queue.append((nr,nc))
+        idx = 0
+        while idx < len(queue):
+            r, c = queue[idx]; idx += 1
+            # Check adjacency to block_B
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                if (r+dr, c+dc) in block_b_cells:
+                    return True
+            # Expand bridge
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if (0 <= nr < rows and 0 <= nc < cols and
+                        g[nr][nc] == bridge_color and (nr,nc) not in visited):
+                    visited.add((nr,nc))
+                    queue.append((nr,nc))
+        return False
+
+    def _predict(self, g: Grid) -> Optional[Grid]:
+        flat = [v for row in g for v in row]
+        counts: dict = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        non_bg = [c for c in counts if c != bg]
+        if len(non_bg) != 2:
+            return None
+        # Find which color forms exactly 2 non-overlapping 2×2 blocks
+        block_color = bridge_color = None
+        blocks = []
+        for color in non_bg:
+            found = self._find_2x2_blocks(g, color)
+            if len(found) == 2:
+                block_color = color
+                blocks = found
+                bridge_color = [c for c in non_bg if c != color][0]
+                break
+        if block_color is None:
+            return None
+        r0, c0 = blocks[0]
+        r1, c1 = blocks[1]
+        block_a = [(r0,c0),(r0+1,c0),(r0,c0+1),(r0+1,c0+1)]
+        block_b = {(r1,c1),(r1+1,c1),(r1,c1+1),(r1+1,c1+1)}
+        connected = self._bfs_connected(g, block_a, bridge_color, block_b)
+        return [[bridge_color]] if connected else [[bg]]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if len(p["output"]) != 1 or len(p["output"][0]) != 1:
+                return None
+        for p in pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CrossCenterArmModeSolver
+# Rule: Find all interior plus/cross patterns where a non-bg center cell has
+#       all 4 orthogonal neighbors of the same non-bg arm color (≠ center).
+#       Collect one arm_color per cross; output = [[mode(arm_colors)]].
+# Targets: 642d658d
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class CrossCenterArmModeSolver(BaseSolver):
+    """
+    Output = [[most-common arm color across all cross patterns]].
+    """
+    name = "CrossCenterArmModeSolver"
+    priority = 57
+
+    @staticmethod
+    def _find_arm_colors(g: Grid) -> Optional[list]:
+        rows, cols = len(g), len(g[0])
+        flat = [v for row in g for v in row]
+        counts: dict = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        arm_colors = []
+        for r in range(1, rows - 1):
+            for c in range(1, cols - 1):
+                center = g[r][c]
+                if center == bg:
+                    continue
+                arms = [g[r-1][c], g[r+1][c], g[r][c-1], g[r][c+1]]
+                # All 4 arms must be same non-bg color, different from center
+                if len(set(arms)) == 1 and arms[0] != bg and arms[0] != center:
+                    arm_colors.append(arms[0])
+        return arm_colors if arm_colors else None
+
+    @staticmethod
+    def _mode(lst: list) -> int:
+        counts: dict = {}
+        for v in lst:
+            counts[v] = counts.get(v, 0) + 1
+        return max(counts, key=counts.get)
+
+    def _predict(self, g: Grid) -> Optional[Grid]:
+        arm_colors = self._find_arm_colors(g)
+        if not arm_colors:
+            return None
+        return [[self._mode(arm_colors)]]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if len(p["output"]) != 1 or len(p["output"][0]) != 1:
+                return None
+        for p in pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# GridLineBandCountSolver
+# Rule: Input has full-row and full-col "lines" of a non-bg line_color dividing
+#       the grid into a rectangular array of bands. Count non-zero-width
+#       horizontal bands (H) and vertical bands (W).
+#       Output = H×W grid filled with bg.
+# Targets: 7039b2d7
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class GridLineBandCountSolver(BaseSolver):
+    """
+    Output = H×W grid of bg where H=row-band count, W=col-band count.
+    """
+    name = "GridLineBandCountSolver"
+    priority = 57
+
+    @staticmethod
+    def _analyze(g: Grid) -> Optional[tuple]:
+        rows, cols = len(g), len(g[0])
+        flat = [v for row in g for v in row]
+        counts: dict = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        # Full-row colors
+        full_row_colors: set = set()
+        for r in range(rows):
+            row_set = set(g[r][c] for c in range(cols))
+            if len(row_set) == 1 and list(row_set)[0] != bg:
+                full_row_colors.add(list(row_set)[0])
+        # Full-col colors
+        full_col_colors: set = set()
+        for c in range(cols):
+            col_set = set(g[r][c] for r in range(rows))
+            if len(col_set) == 1 and list(col_set)[0] != bg:
+                full_col_colors.add(list(col_set)[0])
+        line_colors = full_row_colors & full_col_colors
+        if not line_colors:
+            return None
+        line_color = next(iter(line_colors))
+        line_rows = sorted(r for r in range(rows)
+                           if all(g[r][c] == line_color for c in range(cols)))
+        line_cols = sorted(c for c in range(cols)
+                           if all(g[r][c] == line_color for r in range(rows)))
+        # Count non-zero-width bands
+        boundaries_r = [-1] + line_rows + [rows]
+        H = sum(1 for i in range(len(boundaries_r)-1)
+                if boundaries_r[i+1] - boundaries_r[i] > 1)
+        boundaries_c = [-1] + line_cols + [cols]
+        W = sum(1 for i in range(len(boundaries_c)-1)
+                if boundaries_c[i+1] - boundaries_c[i] > 1)
+        if H == 0 or W == 0:
+            return None
+        return H, W, bg
+
+    def _predict(self, g: Grid) -> Optional[Grid]:
+        result = self._analyze(g)
+        if result is None:
+            return None
+        H, W, bg = result
+        return [[bg] * W for _ in range(H)]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TipCountHalfSolver
+# Rule: Count cells of the primary non-bg color with exactly one same-color
+#       4-connected neighbor (tips). N = tips // 2.
+#       Output = N×1 grid of bg (background color).
+# Targets: e872b94a
+# ─────────────────────────────────────────────────────────────────────────────
+@register_solver
+class TipCountHalfSolver(BaseSolver):
+    """
+    Output = Nx1 grid of bg where N = (tip_count) // 2.
+    """
+    name = "TipCountHalfSolver"
+    priority = 56
+
+    @staticmethod
+    def _count_tips(g: Grid, target_color: int) -> int:
+        rows, cols = len(g), len(g[0])
+        tips = 0
+        for r in range(rows):
+            for c in range(cols):
+                if g[r][c] != target_color:
+                    continue
+                same = sum(1 for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
+                           if 0 <= r+dr < rows and 0 <= c+dc < cols
+                           and g[r+dr][c+dc] == target_color)
+                if same == 1:
+                    tips += 1
+        return tips
+
+    def _predict(self, g: Grid) -> Optional[Grid]:
+        flat = [v for row in g for v in row]
+        counts: dict = {}
+        for v in flat:
+            counts[v] = counts.get(v, 0) + 1
+        bg = max(counts, key=counts.get)
+        non_bg = [c for c in counts if c != bg]
+        if not non_bg:
+            return None
+        target_color = max(non_bg, key=lambda c: counts[c])
+        tips = self._count_tips(g, target_color)
+        if tips == 0 or tips % 2 != 0:
+            return None
+        # Each connected path has 2 tips; N = num_paths + 1
+        N = tips // 2 + 1
+        return [[bg] for _ in range(N)]
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        pairs = ctx.train_pairs
+        if not pairs:
+            return None
+        for p in pairs:
+            if any(len(row) != 1 for row in p["output"]):
+                return None
+        for p in pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# LegendFrameNoiseSolver
+# Tasks: ff2825db
+# 10×10 grid; row-0 = legend [1,1,2,2,3,3,4,4,5,5]; rows 1-9 have outer
+# rectangular frame (frame_color); interior (rows 2-8, cols 1-8) has scattered
+# noise cells of ≥1 non-bg non-frame color.
+# Rule:
+#   1. Dominant noise color = noise color with most cells.
+#   2. Output row 0: legend preserved.
+#   3. Output outer frame → dominant color.
+#   4. Output inner rectangular FRAME drawn at bounding-box of dominant noise cells.
+#   5. All other interior cells = 0.
+# ---------------------------------------------------------------------------
+@register_solver
+class LegendFrameNoiseSolver(BaseSolver):
+    """Legend row + outer frame + interior noise → replace frame and draw inner bbox frame."""
+
+    name = "LegendFrameNoiseSolver"
+
+    def _is_legend_row(self, row: list) -> bool:
+        return row == [1, 1, 2, 2, 3, 3, 4, 4, 5, 5]
+
+    def _check_grid(self, inp: Grid) -> bool:
+        if len(inp) != 10 or any(len(r) != 10 for r in inp):
+            return False
+        if not self._is_legend_row(inp[0]):
+            return False
+        fc = inp[1][0]
+        if fc == 0:
+            return False
+        # Row 1 all fc
+        if any(v != fc for v in inp[1]):
+            return False
+        # Row 9 all fc
+        if any(v != fc for v in inp[9]):
+            return False
+        # Col 0 rows 1-9 all fc
+        if any(inp[r][0] != fc for r in range(1, 10)):
+            return False
+        # Col 9 rows 1-9 all fc
+        if any(inp[r][9] != fc for r in range(1, 10)):
+            return False
+        return True
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        if not self._check_grid(inp):
+            return None
+        fc = inp[1][0]
+        # Collect noise cells in interior
+        noise: dict = {}
+        for r in range(2, 9):
+            for c in range(1, 9):
+                v = inp[r][c]
+                if v != 0 and v != fc:
+                    noise.setdefault(v, []).append((r, c))
+        if not noise:
+            return None
+        dom = max(noise, key=lambda k: len(noise[k]))
+        cells = noise[dom]
+        min_r = min(p[0] for p in cells)
+        max_r = max(p[0] for p in cells)
+        min_c = min(p[1] for p in cells)
+        max_c = max(p[1] for p in cells)
+
+        out = [[0] * 10 for _ in range(10)]
+        # Legend row preserved
+        out[0] = list(inp[0])
+        # Outer frame → dom
+        for c in range(10):
+            out[1][c] = dom
+            out[9][c] = dom
+        for r in range(1, 10):
+            out[r][0] = dom
+            out[r][9] = dom
+        # Inner rectangular border at bbox
+        for c in range(min_c, max_c + 1):
+            out[min_r][c] = dom
+            out[max_r][c] = dom
+        for r in range(min_r, max_r + 1):
+            out[r][min_c] = dom
+            out[r][max_c] = dom
+        return out
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        return all(self._check_grid(p["input"]) for p in ctx.train_pairs)
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        for p in ctx.train_pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# NestedFrameTopoSolver
+# Tasks: 68bc2e87
+# 18×19 grids with overlapping rectangular frames (bg=8).
+# Rule: at each cell where two frame-boundary paths cross, the color shown
+# is the "later" frame (drawn on top). Build a directed graph from these
+# intersection wins and topological-sort to get the output frame order.
+# Output: Nx1 list of frame colors in topo order (outer→inner).
+# ---------------------------------------------------------------------------
+@register_solver
+class NestedFrameTopoSolver(BaseSolver):
+    """Overlapping rect frames: topological sort by boundary intersection wins → Nx1 output."""
+
+    name = "NestedFrameTopoSolver"
+
+    def _get_bbox(self, grid, color):
+        rows, cols = [], []
+        for r, row in enumerate(grid):
+            for c, v in enumerate(row):
+                if v == color:
+                    rows.append(r); cols.append(c)
+        if not rows:
+            return None
+        return min(rows), max(rows), min(cols), max(cols)
+
+    def _on_boundary(self, r, c, bbox) -> bool:
+        r0, r1, c0, c1 = bbox
+        return ((r == r0 or r == r1) and c0 <= c <= c1) or \
+               ((c == c0 or c == c1) and r0 <= r <= r1)
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        bg = 8  # fixed bg for this task family
+        colors = sorted(set(v for row in inp for v in row) - {bg})
+        if len(colors) < 2:
+            return None
+        bboxes = {c: self._get_bbox(inp, c) for c in colors}
+        # Build directed edges: loser → winner at each boundary intersection
+        adj: dict = {c: [] for c in colors}
+        in_deg: dict = {c: 0 for c in colors}
+        seen_pairs: set = set()
+        for i, ci in enumerate(colors):
+            for cj in colors[i + 1:]:
+                if (ci, cj) in seen_pairs:
+                    continue
+                bi, bj = bboxes[ci], bboxes[cj]
+                if bi is None or bj is None:
+                    continue
+                for r in range(len(inp)):
+                    for c in range(len(inp[0])):
+                        if self._on_boundary(r, c, bi) and self._on_boundary(r, c, bj):
+                            winner = inp[r][c]
+                            if winner not in (ci, cj):
+                                continue
+                            loser = cj if winner == ci else ci
+                            pair_key = (loser, winner)
+                            if pair_key not in seen_pairs:
+                                seen_pairs.add(pair_key)
+                                adj[loser].append(winner)
+                                in_deg[winner] = in_deg.get(winner, 0) + 1
+                            break  # one intersection per pair is enough
+        # Topological sort (Kahn's algorithm)
+        from collections import deque
+        q: deque = deque(c for c in colors if in_deg.get(c, 0) == 0)
+        order: list = []
+        while q:
+            node = q.popleft()
+            order.append(node)
+            for nb in adj[node]:
+                in_deg[nb] -= 1
+                if in_deg[nb] == 0:
+                    q.append(nb)
+        if len(order) != len(colors):
+            return None  # cycle detected
+        return [[c] for c in order]
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        # All outputs must be Nx1 and all inputs same size
+        for p in ctx.train_pairs:
+            if any(len(row) != 1 for row in p["output"]):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        for p in ctx.train_pairs:
+            if self._predict(p["input"]) != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+# ---------------------------------------------------------------------------
+# DiagonalExtendEightSolver — targets task 22233c11
+#
+# Rule:
+#   Color-3 cells form 4-connected components that appear in pairs arranged
+#   diagonally (TL+BR, "main diagonal") or anti-diagonally (TR+BL).
+#   Color 8 is placed at two "extension" block positions derived from each pair:
+#
+#   Sort all components by (min_row, min_col); pair consecutively (0+1),(2+3)...
+#   G1 = first in pair (lower min_row).
+#   h = G1 height = max_row-min_row+1,  w = G1 width = max_col-min_col+1
+#
+#   Main diagonal  (G1.min_col < G2.min_col):
+#     8A block rows = [G1_min_r - h .. G1_max_r - h], cols = [G2_min_c + w .. G2_max_c + w]
+#     8B block rows = [G2_min_r + h .. G2_max_r + h], cols = [G1_min_c - w .. G1_max_c - w]
+#
+#   Anti-diagonal  (G1.min_col >= G2.min_col):
+#     8A block rows = [G1_min_r - h .. G1_max_r - h], cols = [G2_min_c - w .. G2_max_c - w]
+#     8B block rows = [G2_min_r + h .. G2_max_r + h], cols = [G1_min_c + w .. G1_max_c + w]
+#
+#   All out-of-bounds cells are simply skipped (clipped).
+# ---------------------------------------------------------------------------
+@register_solver
+class DiagonalExtendEightSolver(BaseSolver):
+    """Color-3 group pairs → extend diagonally with color 8 blocks (task 22233c11)."""
+
+    name = "DiagonalExtendEightSolver"
+
+    # ------------------------------------------------------------------ helpers
+    def _find_components(self, grid: Grid) -> list:
+        """Return list of 4-conn components of color 3 (each a list of (r,c))."""
+        R, C = len(grid), len(grid[0])
+        visited = [[False] * C for _ in range(R)]
+        comps = []
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 3 and not visited[r][c]:
+                    comp, queue = [], [(r, c)]
+                    visited[r][c] = True
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                            nr, nc = cr + dr, cc + dc
+                            if 0 <= nr < R and 0 <= nc < C and not visited[nr][nc] and grid[nr][nc] == 3:
+                                visited[nr][nc] = True
+                                queue.append((nr, nc))
+                    comps.append(comp)
+        return comps
+
+    def _place_block(self, out: Grid, r0: int, r1: int, c0: int, c1: int) -> None:
+        R, C = len(out), len(out[0])
+        for r in range(r0, r1 + 1):
+            for c in range(c0, c1 + 1):
+                if 0 <= r < R and 0 <= c < C:
+                    out[r][c] = 8
+
+    def _predict(self, inp: Grid) -> Optional[Grid]:
+        comps = self._find_components(inp)
+        if len(comps) == 0 or len(comps) % 2 != 0:
+            return None
+
+        comps.sort(key=lambda comp: (min(r for r, c in comp), min(c for r, c in comp)))
+
+        out = [row[:] for row in inp]
+
+        for i in range(0, len(comps), 2):
+            G1, G2 = comps[i], comps[i + 1]
+
+            g1r = [r for r, c in G1];  g1c = [c for r, c in G1]
+            g2r = [r for r, c in G2];  g2c = [c for r, c in G2]
+
+            g1_min_r, g1_max_r = min(g1r), max(g1r)
+            g1_min_c, g1_max_c = min(g1c), max(g1c)
+            g2_min_r, g2_max_r = min(g2r), max(g2r)
+            g2_min_c, g2_max_c = min(g2c), max(g2c)
+
+            h = g1_max_r - g1_min_r + 1
+            w = g1_max_c - g1_min_c + 1
+
+            if g1_min_c < g2_min_c:
+                # Main diagonal: G1=TL, G2=BR
+                # 8A: G1-shifted up, G2-shifted right
+                self._place_block(out, g1_min_r - h, g1_max_r - h, g2_min_c + w, g2_max_c + w)
+                # 8B: G2-shifted down, G1-shifted left
+                self._place_block(out, g2_min_r + h, g2_max_r + h, g1_min_c - w, g1_max_c - w)
+            else:
+                # Anti-diagonal: G1=TR, G2=BL
+                # 8A: G1-shifted up, G2-shifted left
+                self._place_block(out, g1_min_r - h, g1_max_r - h, g2_min_c - w, g2_max_c - w)
+                # 8B: G2-shifted down, G1-shifted right
+                self._place_block(out, g2_min_r + h, g2_max_r + h, g1_min_c + w, g1_max_c + w)
+
+        return out
+
+    # ------------------------------------------------------------------ interface
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            if not any(inp[r][c] == 3 for r in range(len(inp)) for c in range(len(inp[0]))):
+                return False
+            if not any(out[r][c] == 8 for r in range(len(out)) for c in range(len(out[0]))):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        # Validate on all training pairs first
+        for p in ctx.train_pairs:
+            pred = self._predict(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# EightMarkerExtractSolver — targets task 5117e062
+# Rule: Grid contains several 3×3-shaped objects in various colors.
+#       Exactly one object has a color-8 cell.
+#       BFS (4-connected) from the 8-cell collects the full connected component.
+#       The bounding box of that component must be exactly 3×3.
+#       Extract that 3×3 region; replace every 8 with the dominant
+#       non-zero, non-8 color found in the region. Output the 3×3 grid.
+# ---------------------------------------------------------------------------
+@register_solver
+class EightMarkerExtractSolver(BaseSolver):
+    name = "EightMarkerExtractSolver"
+
+    # ------------------------------------------------------------------
+    def _bfs_component(self, grid, sr, sc):
+        """Return set of (r,c) for the 4-connected non-zero component at (sr,sc)."""
+        rows, cols = len(grid), len(grid[0])
+        visited = set()
+        queue = [(sr, sc)]
+        visited.add((sr, sc))
+        while queue:
+            r, c = queue.pop(0)
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = r+dr, c+dc
+                if 0 <= nr < rows and 0 <= nc < cols and (nr, nc) not in visited:
+                    if grid[nr][nc] != 0:
+                        visited.add((nr, nc))
+                        queue.append((nr, nc))
+        return visited
+
+    def _extract(self, grid):
+        """
+        Find color-8 cell, BFS its component, verify 3×3 bbox,
+        replace 8 with dominant non-0/non-8 color, return 3×3 grid.
+        Returns None on any failure.
+        """
+        rows, cols = len(grid), len(grid[0])
+        # Find color-8 cell(s)
+        eight_cells = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 8]
+        if not eight_cells:
+            return None
+
+        # Use first 8 cell as BFS seed
+        sr, sc = eight_cells[0]
+        comp = self._bfs_component(grid, sr, sc)
+
+        # Bounding box
+        rs = [r for r, c in comp]
+        cs = [c for r, c in comp]
+        min_r, max_r = min(rs), max(rs)
+        min_c, max_c = min(cs), max(cs)
+        if (max_r - min_r + 1) != 3 or (max_c - min_c + 1) != 3:
+            return None
+
+        # Extract 3×3 region from grid (not just component cells — full bbox)
+        region = [[grid[min_r + dr][min_c + dc] for dc in range(3)] for dr in range(3)]
+
+        # Dominant non-zero, non-8 color in region
+        from collections import Counter
+        cnt = Counter(
+            region[dr][dc]
+            for dr in range(3) for dc in range(3)
+            if region[dr][dc] not in (0, 8)
+        )
+        if not cnt:
+            return None
+        dom_color = cnt.most_common(1)[0][0]
+
+        # Replace 8 → dominant color
+        result = [[dom_color if region[dr][dc] == 8 else region[dr][dc]
+                   for dc in range(3)] for dr in range(3)]
+        return result
+
+    # ------------------------------------------------------------------
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp = p["input"]
+            out = p["output"]
+            # Output must be 3×3
+            if len(out) != 3 or len(out[0]) != 3:
+                return False
+            # Input must contain color 8
+            rows, cols = len(inp), len(inp[0])
+            if not any(inp[r][c] == 8 for r in range(rows) for c in range(cols)):
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        # Validate on all training pairs
+        for p in ctx.train_pairs:
+            pred = self._extract(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        results = [self._extract(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# SixPointerRotateSolver — targets task 1a244afd
+# Rule: Background=8. Scatter of color-1 "pivots" and color-6 "pointers".
+#       Each 6 aligns with the nearest 1 in the same row or column.
+#       Direction from 6→1, rotated 90° CW, gives the placement axis.
+#       7 is placed at distance d (= |6–1| along the alignment axis) from 1
+#       in the rotated direction. All 6s are removed (set to 8).
+#       Unpaired 6s (no aligned 1) are simply removed.
+# ---------------------------------------------------------------------------
+@register_solver
+class SixPointerRotateSolver(BaseSolver):
+    name = "SixPointerRotateSolver"
+
+    @staticmethod
+    def _rotate_cw(dr, dc):
+        return dc, -dr
+
+    def _predict(self, grid):
+        rows, cols = len(grid), len(grid[0])
+        import copy
+        out = copy.deepcopy(grid)
+
+        ones  = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 1]
+        sixes = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 6]
+
+        # 1-centric pairing: for each 1, find the best aligned 6.
+        # Tiebreak: column-aligned before row-aligned, then shorter distance,
+        # then smaller (row, col) index.  This prevents a row-aligned 6 from
+        # stealing a 1 that a column-aligned 6 was pointing at.
+        for r1, c1 in ones:
+            aligned = [
+                (r6, c6) for r6, c6 in sixes
+                if r6 == r1 or c6 == c1
+            ]
+            if not aligned:
+                continue
+
+            def six_key(rc):
+                r6, c6 = rc
+                dist = abs(r6 - r1) + abs(c6 - c1)
+                col_prio = 0 if c6 == c1 else 1   # column-aligned preferred
+                return (dist, col_prio, r6, c6)
+
+            r6, c6 = min(aligned, key=six_key)
+
+            if r6 == r1:   # same row
+                dist = abs(c6 - c1)
+                dr, dc = 0, (1 if c1 > c6 else -1)
+            else:           # same col
+                dist = abs(r6 - r1)
+                dr, dc = (1 if r1 > r6 else -1), 0
+
+            rdr, rdc = self._rotate_cw(dr, dc)
+            r7 = r1 + dist * rdr
+            c7 = c1 + dist * rdc
+
+            if 0 <= r7 < rows and 0 <= c7 < cols:
+                out[r7][c7] = 7
+
+        # Remove all 6s (background)
+        for r6, c6 in sixes:
+            out[r6][c6] = 8
+
+        return out
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            rows, cols = len(inp), len(inp[0])
+            has_six = any(inp[r][c] == 6 for r in range(rows) for c in range(cols))
+            has_one = any(inp[r][c] == 1 for r in range(rows) for c in range(cols))
+            if not has_six or not has_one:
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        for p in ctx.train_pairs:
+            pred = self._predict(p["input"])
+            if pred != p["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class RotationSymmetryFillSolver(BaseSolver):
+    """
+    Task 1b60fb0c: 180-degree rotation fill.
+    Input colors [0,1]; output adds color 2 to cells that are the
+    180-rotation of a 1-cell about the shape's centre of symmetry.
+    Centre is detected per-grid by choosing whichever natural candidate
+    ((R-1)/2, (C-1)/2) or (R/2, C/2) maximises self-overlap of the 1-shape.
+    """
+    name = "RotationSymmetryFillSolver"
+
+    @staticmethod
+    def _score_center(grid, cx, cy):
+        """Count 1-cells whose 180-rotation about (cx,cy) is also a 1."""
+        R, C = len(grid), len(grid[0])
+        score = total = 0
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 1:
+                    total += 1
+                    r2 = int(round(2 * cx - r))
+                    c2 = int(round(2 * cy - c))
+                    if 0 <= r2 < R and 0 <= c2 < C and grid[r2][c2] == 1:
+                        score += 1
+        return score, total
+
+    @staticmethod
+    def _apply_rotation(grid, cx, cy):
+        R, C = len(grid), len(grid[0])
+        result = [row[:] for row in grid]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] == 0:
+                    r2 = int(round(2 * cx - r))
+                    c2 = int(round(2 * cy - c))
+                    if 0 <= r2 < R and 0 <= c2 < C and grid[r2][c2] == 1:
+                        result[r][c] = 2
+        return result
+
+    def _predict(self, grid):
+        R, C = len(grid), len(grid[0])
+        cA = ((R - 1) / 2.0, (C - 1) / 2.0)
+        cB = (R / 2.0, C / 2.0)
+        sA, tot = self._score_center(grid, *cA)
+        sB, _   = self._score_center(grid, *cB)
+        if tot == 0:
+            return None
+        cx, cy = cA if sA >= sB else cB
+        return self._apply_rotation(grid, cx, cy)
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for p in ctx.train_pairs:
+            inp, out = p["input"], p["output"]
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return False
+            inp_vals = {inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))}
+            out_vals = {out[r][c] for r in range(len(out)) for c in range(len(out[0]))}
+            if not inp_vals.issubset({0, 1}):
+                return False
+            if not out_vals.issubset({0, 1, 2}):
+                return False
+            if 2 not in out_vals or 1 not in inp_vals:
+                return False
+        return True
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        for pair in ctx.train_pairs:
+            pred = self._predict(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return None
+        results = [self._predict(t) for t in ctx.test_inputs]
+        if any(r is None for r in results):
+            return None
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ArmCollapseOnFiveSolver — task 182e5d0f
+# Colors {0,3,5,7}; background=7.
+# Corner: a 3-cell with exactly two 0-neighbors on OPPOSITE orthogonal sides.
+# Arm: BFS/path of connected 3-cells starting from corner's one 3-neighbor.
+# Tip: last cell of arm.
+# Trigger: if a 5 is 4-adjacent to tip → 5→7, arm[0]→5, arm[1:]→7; corner stays.
+# No trigger: path unchanged. Stray 5s stay.
+# ---------------------------------------------------------------------------
+@register_solver
+class ArmCollapseOnFiveSolver(BaseSolver):
+    name = "ArmCollapseOnFiveSolver"
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            colors = {c for row in inp for c in row}
+            if not colors <= {0, 3, 5, 7}:
+                return False
+            if 3 not in colors or 7 not in colors:
+                return False
+        return True
+
+    def _find_corners(self, grid):
+        R, C = len(grid), len(grid[0])
+        corners = []
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 3:
+                    continue
+                dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+                zero_dirs = []
+                for dr, dc in dirs:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0:
+                        zero_dirs.append((dr, dc))
+                if len(zero_dirs) == 2:
+                    (dr1,dc1),(dr2,dc2) = zero_dirs
+                    if dr1+dr2 == 0 and dc1+dc2 == 0:  # opposite
+                        corners.append((r, c))
+        return corners
+
+    def _trace_arm(self, grid, corner):
+        R, C = len(grid), len(grid[0])
+        cr, cc = corner
+        dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+        # find 3-neighbor of corner (not a 0-direction, not background)
+        zero_dirs = set()
+        for dr, dc in dirs:
+            nr, nc = cr+dr, cc+dc
+            if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 0:
+                zero_dirs.add((dr, dc))
+        arm = []
+        visited = {corner}
+        # start from corner's 3-neighbors that are NOT in a 0-direction
+        starts = []
+        for dr, dc in dirs:
+            nr, nc = cr+dr, cc+dc
+            if (dr, dc) in zero_dirs:
+                continue
+            if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 3:
+                starts.append((nr, nc))
+        if not starts:
+            return arm
+        cur = starts[0]
+        visited.add(cur)
+        arm.append(cur)
+        while True:
+            found_next = False
+            for dr, dc in dirs:
+                nr, nc = cur[0]+dr, cur[1]+dc
+                if (nr, nc) not in visited and 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 3:
+                    visited.add((nr, nc))
+                    arm.append((nr, nc))
+                    cur = (nr, nc)
+                    found_next = True
+                    break
+            if not found_next:
+                break
+        return arm
+
+    def _transform(self, grid):
+        import copy
+        R, C = len(grid), len(grid[0])
+        out = copy.deepcopy(grid)
+        corners = self._find_corners(grid)
+        dirs = [(-1,0),(1,0),(0,-1),(0,1)]
+        for corner in corners:
+            arm = self._trace_arm(grid, corner)
+            if not arm:
+                continue
+            tip = arm[-1]
+            # check for 5 adjacent to tip
+            five_pos = None
+            for dr, dc in dirs:
+                nr, nc = tip[0]+dr, tip[1]+dc
+                if 0 <= nr < R and 0 <= nc < C and grid[nr][nc] == 5:
+                    five_pos = (nr, nc)
+                    break
+            if five_pos is not None:
+                out[five_pos[0]][five_pos[1]] = 7
+                out[arm[0][0]][arm[0][1]] = 5
+                for cell in arm[1:]:
+                    out[cell[0]][cell[1]] = 7
+                # corner stays as 3
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        # Validate on training pairs
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = []
+        for test_inp in ctx.test_inputs:
+            pred = self._transform(test_inp)
+            results.append(pred)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# AlignToColorOneSolver — task 1caeab9d
+# Colors {0,1,2,4}. Each non-background shape vertically shifts so its
+# top-most row aligns with the top-most row of the color-1 shape.
+# Column positions of all cells are preserved.
+# ---------------------------------------------------------------------------
+@register_solver
+class AlignToColorOneSolver(BaseSolver):
+    name = "AlignToColorOneSolver"
+
+    def can_solve(self, ctx: TaskContext) -> bool:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            colors = {c for row in inp for c in row}
+            if not colors <= {0, 1, 2, 4}:
+                return False
+            if 1 not in colors:
+                return False
+        return True
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        color_cells = {}
+        for r in range(R):
+            for c in range(C):
+                v = grid[r][c]
+                if v != 0:
+                    color_cells.setdefault(v, []).append((r, c))
+        if 1 not in color_cells:
+            return grid
+        ref_top = min(r for r, c in color_cells[1])
+        out = [[0] * C for _ in range(R)]
+        for r, c in color_cells[1]:
+            out[r][c] = 1
+        for color, cells in color_cells.items():
+            if color == 1:
+                continue
+            top = min(r for r, c in cells)
+            shift = ref_top - top
+            for r, c in cells:
+                nr = r + shift
+                if 0 <= nr < R:
+                    out[nr][c] = color
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ShiftNonBgDown1Solver — task 25ff71a9
+# Rule: shift every non-zero cell down exactly 1 row; cells at last row vanish.
+# ---------------------------------------------------------------------------
+@register_solver
+class ShiftNonBgDown1Solver(BaseSolver):
+    name = "ShiftNonBgDown1Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [[0] * C for _ in range(R)]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 0:
+                    nr = r + 1
+                    if nr < R:
+                        out[nr][c] = grid[r][c]
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# Rotate180Solver — tasks 3c9b0459, 6150a2bd
+# Rule: 180° rotation; new[r][c] = old[R-1-r][C-1-c].
+# ---------------------------------------------------------------------------
+@register_solver
+class Rotate180Solver(BaseSolver):
+    name = "Rotate180Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        return [[grid[R-1-r][C-1-c] for c in range(C)] for r in range(R)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# Rotate90CCWSolver — task ed36ccf7
+# Rule: 90° counter-clockwise; output is C×R; new[nr][nc] = old[nc][C-1-nr].
+# ---------------------------------------------------------------------------
+@register_solver
+class Rotate90CCWSolver(BaseSolver):
+    name = "Rotate90CCWSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        # output dimensions: C rows × R cols
+        return [[grid[nc][C-1-nr] for nc in range(R)] for nr in range(C)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            out = pair["output"]
+            R, C = len(inp), len(inp[0])
+            if len(out) != C or len(out[0]) != R:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != out:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# MaxFreqKeepSolver — task 9565186b
+# Rule: find most-frequent non-zero color; keep those cells; replace every
+# other cell (including background 0) with 5.
+# ---------------------------------------------------------------------------
+@register_solver
+class MaxFreqKeepSolver(BaseSolver):
+    name = "MaxFreqKeepSolver"
+
+    def _dominant(self, grid):
+        from collections import Counter
+        counts = Counter(cell for row in grid for cell in row if cell != 0)
+        return counts.most_common(1)[0][0] if counts else None
+
+    def _transform(self, grid):
+        dom = self._dominant(grid)
+        if dom is None:
+            return grid
+        return [[cell if cell == dom else 5 for cell in row] for row in grid]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# TwoRowCheckerSolver — task e9afcf9a
+# Rule: input has exactly 2 uniform rows (all-A, all-B).
+# Output is a checkerboard: row r, col c → A if (r+c)%2==0 else B.
+# ---------------------------------------------------------------------------
+@register_solver
+class TwoRowCheckerSolver(BaseSolver):
+    name = "TwoRowCheckerSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        A = grid[0][0]
+        B = grid[1][0] if R > 1 else A
+        return [[(A if (r + c) % 2 == 0 else B) for c in range(C)] for r in range(R)]
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            if len(inp) != 2:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            A, B = inp[0][0], inp[1][0]
+            if not all(cell == A for cell in inp[0]) or not all(cell == B for cell in inp[1]):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# DiagonalBarSolver — task 3bd67248
+# Input: column 0 is a non-zero color; all other cells are 0.
+# Rule: place 2s on the anti-diagonal (0,C-1)→(R-2,1); fill last row
+# cols 1..C-1 with 4; column 0 unchanged.
+# ---------------------------------------------------------------------------
+@register_solver
+class DiagonalBarSolver(BaseSolver):
+    name = "DiagonalBarSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for i in range(min(R - 1, C - 1)):
+            out[i][C - 1 - i] = 2
+        for c in range(1, C):
+            out[R - 1][c] = 4
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            inp = pair["input"]
+            # Validate structural precondition
+            R, C = len(inp), len(inp[0])
+            if any(inp[r][c] != 0 for r in range(R) for c in range(1, C)):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+            if self._transform(inp) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ShiftDown1Recolor2Solver — task a79310a0
+# Rule: shift every non-zero cell down 1 row AND recolor it to 2.
+# ---------------------------------------------------------------------------
+@register_solver
+class ShiftDown1Recolor2Solver(BaseSolver):
+    name = "ShiftDown1Recolor2Solver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [[0] * C for _ in range(R)]
+        for r in range(R):
+            for c in range(C):
+                if grid[r][c] != 0:
+                    nr = r + 1
+                    if nr < R:
+                        out[nr][c] = 2
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColPositionToColorSolver — task a85d4709
+# Input: each row contains exactly one 5; rest are 0s.
+# Rule: the column index of the 5 determines a uniform fill color for the
+# whole row (mapping learned from training pairs).
+# ---------------------------------------------------------------------------
+@register_solver
+class ColPositionToColorSolver(BaseSolver):
+    name = "ColPositionToColorSolver"
+
+    def _learn_mapping(self, ctx: TaskContext):
+        mapping = {}
+        for pair in ctx.train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if len(inp) != len(out):
+                return None
+            for r in range(len(inp)):
+                if r >= len(out) or len(inp[r]) != len(out[r]):
+                    return None
+                fives = [c for c in range(len(inp[r])) if inp[r][c] == 5]
+                if len(fives) != 1:
+                    return None
+                col = fives[0]
+                colors = set(out[r])
+                if len(colors) != 1:
+                    return None
+                fill = list(colors)[0]
+                if col in mapping and mapping[col] != fill:
+                    return None
+                mapping[col] = fill
+        return mapping
+
+    def _transform(self, grid, mapping):
+        R, C = len(grid), len(grid[0])
+        out = []
+        for r in range(R):
+            fives = [c for c in range(C) if grid[r][c] == 5]
+            col = fives[0] if fives else 0
+            out.append([mapping.get(col, 0)] * C)
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        mapping = self._learn_mapping(ctx)
+        if not mapping:
+            return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"], mapping) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t, mapping) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColumnFillDownSolver — task d037b0a7
+# Rule: per-column fill-down: a non-zero value propagates downward through
+# all subsequent zero cells in the same column.
+# ---------------------------------------------------------------------------
+@register_solver
+class ColumnFillDownSolver(BaseSolver):
+    name = "ColumnFillDownSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for c in range(C):
+            last = 0
+            for r in range(R):
+                if out[r][c] != 0:
+                    last = out[r][c]
+                elif last != 0:
+                    out[r][c] = last
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+# ---------------------------------------------------------------------------
+# ColorCountToPatternSolver — task 6e02f1e3
+# Rule: count unique non-zero colors (n) in the input, then output:
+#   n==1 → row 0 filled with 5, rest 0
+#   n==2 → main diagonal = 5, rest 0
+#   n==3 → anti-diagonal = 5, rest 0
+# ---------------------------------------------------------------------------
+@register_solver
+class ColorCountToPatternSolver(BaseSolver):
+    name = "ColorCountToPatternSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        n = len({cell for row in grid for cell in row if cell != 0})
+        out = [[0] * C for _ in range(R)]
+        if n == 1:
+            for c in range(C):
+                out[0][c] = 5
+        elif n == 2:
+            for i in range(min(R, C)):
+                out[i][i] = 5
+        elif n == 3:
+            for i in range(min(R, C)):
+                out[i][C - 1 - i] = 5
+        return out
+
+    def solve(self, ctx: TaskContext) -> SolverResult:
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="DSA")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CountTo2sFillSolver(BaseSolver):
+    """
+    Task 794b24be: count 1s in input (N), fill N cells with 2
+    using fixed order: (0,0),(0,1),(0,2),(1,1),(1,0),(1,2),(2,1),(2,0),(2,2)
+    """
+    name = "CountTo2sFillSolver"
+    FILL_ORDER = [(0,0),(0,1),(0,2),(1,1),(1,0),(1,2),(2,1),(2,0),(2,2)]
+
+    def _transform(self, grid):
+        n = sum(row.count(1) for row in grid)
+        R, C = len(grid), len(grid[0])
+        out = [[0]*C for _ in range(R)]
+        for idx, (r, c) in enumerate(self.FILL_ORDER):
+            if idx < n and r < R and c < C:
+                out[r][c] = 2
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class UShapeOpeningMarkerSolver(BaseSolver):
+    """
+    Task 54d82841: find 2-row U-shape pattern in any row-pair:
+      row[r][c..c+2] = [A, A, A]
+      row[r+1][c..c+2] = [A, 0, A]  (A != 0)
+    Place color 4 in the LAST ROW at the opening column (c+1).
+    Multiple U-shapes -> multiple 4s at their respective opening columns.
+    """
+    name = "UShapeOpeningMarkerSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        last_r = R - 1
+        for r in range(R - 1):
+            for c in range(C - 2):
+                A = grid[r][c]
+                if A == 0:
+                    continue
+                # top bar: A A A
+                if grid[r][c+1] == A and grid[r][c+2] == A:
+                    # bottom: A 0 A
+                    if grid[r+1][c] == A and grid[r+1][c+1] == 0 and grid[r+1][c+2] == A:
+                        out[last_r][c+1] = 4
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class DiamondOutwardPairSolver(BaseSolver):
+    """
+    Task 9f5f939b: mark any non-1 cell at (r,c) with 4 if:
+      dist-2 cardinal neighbors all == 1: (r±2,c), (r,c±2)
+      dist-3 cardinal neighbors all == 1: (r±3,c), (r,c±3)
+    Bounds: r in [3, R-4], c in [3, C-4]
+    """
+    name = "DiamondOutwardPairSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        for r in range(3, R - 3):
+            for c in range(3, C - 3):
+                if grid[r][c] == 1:
+                    continue
+                # dist-2 diamond
+                if not (grid[r-2][c] == 1 and grid[r+2][c] == 1 and
+                        grid[r][c-2] == 1 and grid[r][c+2] == 1):
+                    continue
+                # dist-3 outward pairs
+                if not (grid[r-3][c] == 1 and grid[r+3][c] == 1 and
+                        grid[r][c-3] == 1 and grid[r][c+3] == 1):
+                    continue
+                out[r][c] = 4
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class PyramidShadowSolver(BaseSolver):
+    """
+    Task b8cdaf2b: in the last non-zero row (bottom_r):
+      identify border color B (leftmost == rightmost non-zero color)
+      and fill color A (other non-zero color, contiguous in middle).
+    For each B cell at col c:
+      dist = min(|c - fill_left|, |c - fill_right|)
+      place A at (bottom_r - dist - 1, c)
+    """
+    name = "PyramidShadowSolver"
+
+    def _transform(self, grid):
+        R, C = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        # find last non-zero row
+        bottom_r = None
+        for r in range(R - 1, -1, -1):
+            if any(v != 0 for v in grid[r]):
+                bottom_r = r
+                break
+        if bottom_r is None:
+            return out
+        row = grid[bottom_r]
+        # find leftmost and rightmost non-zero
+        nz = [c for c in range(C) if row[c] != 0]
+        if len(nz) < 2:
+            return out
+        left_col, right_col = nz[0], nz[-1]
+        B = row[left_col]
+        if row[right_col] != B:
+            return out  # border must be same color
+        # fill color A: non-zero, non-B cells between left and right
+        fill_cols = [c for c in nz if row[c] != B]
+        if not fill_cols:
+            return out
+        A = row[fill_cols[0]]
+        fill_left = fill_cols[0]
+        fill_right = fill_cols[-1]
+        # B cells: leftmost + rightmost
+        b_cols = [c for c in nz if row[c] == B]
+        for c in b_cols:
+            dist = min(abs(c - fill_left), abs(c - fill_right))
+            target_r = bottom_r - dist - 1
+            if 0 <= target_r < R:
+                out[target_r][c] = A
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            if self._transform(pair["input"]) != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = [self._transform(t) for t in ctx.test_inputs]
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class LineExtensionToBorderSolver(BaseSolver):
+    """Task 9f8de559: 7-interior grid with colored border. Inside: line of 6s + a 2 at one end.
+    Rule: extend the 6-line past the 2 in the same direction until hitting a non-7 border cell;
+    change that border cell to 7."""
+    name = "LineExtensionToBorderSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        # find all 6-cells and the 2-cell
+        sixes = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 6]
+        twos  = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 2]
+        if not sixes or not twos:
+            return None
+        two_r, two_c = twos[0]
+        # sort sixes to find direction
+        sixes_sorted = sorted(sixes)
+        if len(sixes_sorted) < 2:
+            return None
+        # compute step from first to last six
+        r0, c0 = sixes_sorted[0]
+        r1, c1 = sixes_sorted[-1]
+        dr = 0 if r1 == r0 else (1 if r1 > r0 else -1)
+        dc = 0 if c1 == c0 else (1 if c1 > c0 else -1)
+        # determine if 2 is past the last or before the first
+        last_r, last_c = sixes_sorted[-1]
+        first_r, first_c = sixes_sorted[0]
+        if (two_r, two_c) == (last_r + dr, last_c + dc):
+            step_r, step_c = dr, dc
+            start_r, start_c = two_r + step_r, two_c + step_c
+        elif (two_r, two_c) == (first_r - dr, first_c - dc):
+            step_r, step_c = -dr, -dc
+            start_r, start_c = two_r + step_r, two_c + step_c
+        else:
+            return None
+        # walk in step direction until hitting non-7 cell
+        r, c = start_r, start_c
+        while 0 <= r < rows and 0 <= c < cols:
+            if g[r][c] != 7:
+                g[r][c] = 7
+                return g
+            r += step_r
+            c += step_c
+        return None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class PushEightThroughBlockSolver(BaseSolver):
+    """Task e4941b18: 7-background grid with a rectangular block of 5s, one isolated 2 and one isolated 8
+    in the row directly above the 5-block's top edge.
+    Rule: erase original 2 (→7), move 2 to where 8 was, move 8 to bottom of 5-block on the
+    opposite side: if 2 was LEFT of 8 → new 8 at (bottom_row, right_col+1);
+    if 2 was RIGHT of 8 → new 8 at (bottom_row, left_col-1)."""
+    name = "PushEightThroughBlockSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        # find the 5-block bounding box
+        five_cells = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 5]
+        if not five_cells:
+            return None
+        top_row  = min(r for r, c in five_cells)
+        bot_row  = max(r for r, c in five_cells)
+        left_col = min(c for r, c in five_cells)
+        right_col= max(c for r, c in five_cells)
+        # find 2 and 8 in the row just above the block
+        check_row = top_row - 1
+        two_cells = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 2]
+        eight_cells= [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 8]
+        if not two_cells or not eight_cells:
+            return None
+        two_r, two_c = two_cells[0]
+        eight_r, eight_c = eight_cells[0]
+        # determine side
+        if two_c < eight_c:
+            new_eight_c = right_col + 1
+        else:
+            new_eight_c = left_col - 1
+        if not (0 <= new_eight_c < cols):
+            return None
+        # apply transforms
+        g[two_r][two_c] = 7       # erase original 2
+        g[eight_r][eight_c] = 2   # 2 jumps to 8's position
+        g[bot_row][new_eight_c] = 8  # new 8 at bottom of block
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MidpointPlusSolver(BaseSolver):
+    """Task e9614598: grid with exactly two 1-cells on zero background.
+    Rule: compute integer midpoint; draw a plus (cross) of color 3 at midpoint (center + 4 cardinal neighbors)."""
+    name = "MidpointPlusSolver"
+
+    def _transform(self, grid):
+        import copy
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        ones = [(r, c) for r in range(rows) for c in range(cols) if g[r][c] == 1]
+        if len(ones) != 2:
+            return None
+        (r1, c1), (r2, c2) = ones
+        mr, mc = (r1 + r2) // 2, (c1 + c2) // 2
+        for dr, dc in [(0,0),(1,0),(-1,0),(0,1),(0,-1)]:
+            nr, nc = mr + dr, mc + dc
+            if 0 <= nr < rows and 0 <= nc < cols:
+                g[nr][nc] = 3
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class DiagonalAlternateSolver(BaseSolver):
+    """Task a5f85a15: non-zero cells lie on diagonals (r-c = constant).
+    Within each diagonal (sorted by row), even-indexed cells keep their color;
+    odd-indexed cells change to 4."""
+    name = "DiagonalAlternateSolver"
+
+    def _transform(self, grid):
+        import copy
+        from collections import defaultdict
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        diags = defaultdict(list)
+        for r in range(rows):
+            for c in range(cols):
+                if g[r][c] != 0:
+                    diags[r - c].append((r, c))
+        for cells in diags.values():
+            cells.sort()
+            for idx, (r, c) in enumerate(cells):
+                if idx % 2 == 1:
+                    g[r][c] = 4
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class LPocketFilterSolver(BaseSolver):
+    """Task 1e81d6f9: color-5 cells form an L-shape, defining a 'pocket' corner.
+    One non-zero, non-5 color has some cells inside the pocket and some outside.
+    Rule: erase all cells of that target color that lie outside the pocket."""
+    name = "LPocketFilterSolver"
+
+    def _find_pocket(self, grid):
+        from collections import defaultdict
+        rows, cols = len(grid), len(grid[0])
+        fives = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 5]
+        if not fives:
+            return None, None
+        by_row = defaultdict(list)
+        by_col = defaultdict(list)
+        for r, c in fives:
+            by_row[r].append(c)
+            by_col[c].append(r)
+        if not by_row or not by_col:
+            return None, None
+        h_row = max(by_row, key=lambda r: len(by_row[r]))
+        v_col = max(by_col, key=lambda c: len(by_col[c]))
+        return h_row, v_col  # pocket is rows < h_row, cols < v_col
+
+    def _transform(self, grid):
+        import copy
+        from collections import defaultdict
+        g = copy.deepcopy(grid)
+        rows, cols = len(g), len(g[0])
+        pr, pc = self._find_pocket(grid)
+        if pr is None or pc is None:
+            return None
+        color_cells = defaultdict(list)
+        for r in range(rows):
+            for c in range(cols):
+                v = grid[r][c]
+                if v not in (0, 5):
+                    color_cells[v].append((r, c))
+        target_color = None
+        for color, cells in color_cells.items():
+            inside  = [(r, c) for r, c in cells if r < pr and c < pc]
+            outside = [(r, c) for r, c in cells if not (r < pr and c < pc)]
+            if len(inside) >= 1 and len(outside) >= 1:
+                target_color = color
+                break
+        if target_color is None:
+            return None
+        for r, c in color_cells[target_color]:
+            if not (r < pr and c < pc):
+                g[r][c] = 0
+        return g
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            result = self._transform(pair["input"])
+            if result is None or result != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class IsolatedTipDiagonalSolver(BaseSolver):
+    """
+    Task 7ddcd7ec: 0-background, single-color non-zero cells form a connected cluster
+    (typically 2x2) plus isolated tip cells (no edge-adjacent non-zero neighbors).
+    Rule: for each isolated tip, compute direction dr/dc = sign(tip_r - centroid_r),
+    sign(tip_c - centroid_c) (each ±1). Step from tip+step to grid boundary in that
+    direction, coloring each cell with the tip's color.
+    """
+    name = "IsolatedTipDiagonalSolver"
+
+    def _get_cluster_and_tips(self, grid):
+        rows, cols = len(grid), len(grid[0])
+        nz = [(r, c) for r in range(rows) for c in range(cols) if grid[r][c] != 0]
+        if not nz:
+            return None, None, None
+        color = grid[nz[0][0]][nz[0][1]]
+        if any(grid[r][c] != color for r, c in nz):
+            return None, None, None  # multiple colors
+        # classify: isolated tip = no edge-adjacent non-zero neighbor
+        nz_set = set(nz)
+        tips = []
+        cluster = []
+        for r, c in nz:
+            neighbors = [(r-1,c),(r+1,c),(r,c-1),(r,c+1)]
+            if any(n in nz_set for n in neighbors):
+                cluster.append((r, c))
+            else:
+                tips.append((r, c))
+        if not cluster or not tips:
+            return None, None, None
+        return cluster, tips, color
+
+    def _transform(self, grid):
+        cluster, tips, color = self._get_cluster_and_tips(grid)
+        if cluster is None:
+            return None
+        rows, cols = len(grid), len(grid[0])
+        cr = sum(r for r, c in cluster) / len(cluster)
+        cc = sum(c for r, c in cluster) / len(cluster)
+        out = [row[:] for row in grid]
+        for tr, tc in tips:
+            dr = 1 if tr >= cr else -1
+            dc = 1 if tc >= cc else -1
+            r, c = tr + dr, tc + dc
+            while 0 <= r < rows and 0 <= c < cols:
+                out[r][c] = color
+                r += dr
+                c += dc
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CompleteLToSquareSolver(BaseSolver):
+    """
+    Task 3aa6fb7a: 0-background with 8-cells forming L-shaped groups of size 3
+    whose bounding box is 2x2 (one corner missing). Rule: find each such connected
+    component and place color 1 at the missing 4th corner of the bounding box.
+    """
+    name = "CompleteLToSquareSolver"
+
+    def _find_components(self, grid, color):
+        rows, cols = len(grid), len(grid[0])
+        visited = set()
+        components = []
+        for r in range(rows):
+            for c in range(cols):
+                if grid[r][c] == color and (r, c) not in visited:
+                    # BFS
+                    comp = []
+                    queue = [(r, c)]
+                    visited.add((r, c))
+                    while queue:
+                        cr, cc = queue.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            nr, nc = cr+dr, cc+dc
+                            if 0 <= nr < rows and 0 <= nc < cols and grid[nr][nc] == color and (nr,nc) not in visited:
+                                visited.add((nr, nc))
+                                queue.append((nr, nc))
+                    components.append(comp)
+        return components
+
+    def _transform(self, grid):
+        components = self._find_components(grid, 8)
+        if not components:
+            return None
+        out = [row[:] for row in grid]
+        placed = False
+        for comp in components:
+            if len(comp) != 3:
+                continue
+            min_r = min(r for r, c in comp)
+            max_r = max(r for r, c in comp)
+            min_c = min(c for r, c in comp)
+            max_c = max(c for r, c in comp)
+            if max_r - min_r != 1 or max_c - min_c != 1:
+                continue  # not 2x2 bounding box
+            # find the missing corner
+            corners = {(min_r, min_c), (min_r, max_c), (max_r, min_c), (max_r, max_c)}
+            comp_set = set(comp)
+            missing = corners - comp_set
+            if len(missing) != 1:
+                continue
+            mr, mc = missing.pop()
+            out[mr][mc] = 1
+            placed = True
+        return out if placed else None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+#  NEW SOLVERS (Wave-3): ZoneColFillSolver, TileRepeatExtractSolver,
+#                        CrosshairBoxInteriorSolver, CrosshairDotSolver,
+#                        StripeFenceSolver
+# ═══════════════════════════════════════════════════════════════════════════════
+
+
+@register_solver
+class ZoneColFillSolver(BaseSolver):
+    """
+    Horizontal bands mode:
+      Every row has exactly one non-zero color (band color); 0-cells mixed in.
+      Consecutive same-color rows form a band.
+      Any column inside that band that contains a 0 → entire column within band
+      is filled with the band color.
+    Vertical strips mode (same logic, transposed):
+      Every column has exactly one non-zero color; consecutive same-color cols
+      form a strip; any row inside the strip that contains a 0 → row filled.
+    Covers: 855e0971 and similar zone-fill tasks.
+    """
+    name = "zone_col_fill_solver"
+
+    def _band_color(self, seq):
+        """Return the single non-zero value in seq, or None if 0 or mixed."""
+        colors = set(v for v in seq if v != 0)
+        return colors.pop() if len(colors) == 1 else None
+
+    def _try_horizontal(self, grid):
+        H, W = len(grid), len(grid[0])
+        row_colors = [self._band_color(grid[r]) for r in range(H)]
+        if any(c is None for c in row_colors):
+            return None
+        # group consecutive same-color rows into bands
+        bands = []
+        start = 0
+        for r in range(1, H):
+            if row_colors[r] != row_colors[r - 1]:
+                bands.append((start, r - 1, row_colors[start]))
+                start = r
+        bands.append((start, H - 1, row_colors[start]))
+
+        out = [row[:] for row in grid]
+        filled = False
+        for (r0, r1, color) in bands:
+            for c in range(W):
+                if any(grid[r][c] == 0 for r in range(r0, r1 + 1)):
+                    for r in range(r0, r1 + 1):
+                        out[r][c] = 0   # 0 propagates through the column
+                    filled = True
+        return out if filled else None
+
+    def _try_vertical(self, grid):
+        H, W = len(grid), len(grid[0])
+        col_colors = [self._band_color([grid[r][c] for r in range(H)]) for c in range(W)]
+        if any(c is None for c in col_colors):
+            return None
+        strips = []
+        start = 0
+        for c in range(1, W):
+            if col_colors[c] != col_colors[c - 1]:
+                strips.append((start, c - 1, col_colors[start]))
+                start = c
+        strips.append((start, W - 1, col_colors[start]))
+
+        out = [row[:] for row in grid]
+        filled = False
+        for (c0, c1, color) in strips:
+            for r in range(H):
+                if any(grid[r][c] == 0 for c in range(c0, c1 + 1)):
+                    for c in range(c0, c1 + 1):
+                        out[r][c] = 0   # 0 propagates through the row
+                    filled = True
+        return out if filled else None
+
+    def _transform(self, grid):
+        result = self._try_horizontal(grid)
+        if result is not None:
+            return result
+        return self._try_vertical(grid)
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class TileRepeatExtractSolver(BaseSolver):
+    """
+    Input is a base tile repeated N≥2 times horizontally OR vertically.
+    Output is the first (top-left) tile.
+    Covers: 2dee498d and ~35 rect_crop tile-repeat tasks.
+    """
+    name = "tile_repeat_extract_solver"
+
+    def _detect_tile(self, grid):
+        H = len(grid)
+        W = len(grid[0])
+        # Horizontal repeat: search largest tile_w first; first tile appears ≥2 times
+        for tile_w in range(W - 1, 0, -1):
+            if W % tile_w != 0:
+                continue
+            n = W // tile_w
+            if n < 2:
+                continue
+            first = tuple(tuple(grid[r][0:tile_w]) for r in range(H))
+            count = sum(
+                1 for t in range(n)
+                if tuple(tuple(grid[r][t * tile_w:(t + 1) * tile_w]) for r in range(H)) == first
+            )
+            if count >= 2:
+                return [list(row) for row in first]
+        # Vertical repeat: search largest tile_h first; first tile appears ≥2 times
+        for tile_h in range(H - 1, 0, -1):
+            if H % tile_h != 0:
+                continue
+            n = H // tile_h
+            if n < 2:
+                continue
+            first = tuple(tuple(grid[r]) for r in range(tile_h))
+            count = sum(
+                1 for t in range(n)
+                if tuple(tuple(grid[t * tile_h + r]) for r in range(tile_h)) == first
+            )
+            if count >= 2:
+                return [list(row) for row in first]
+        return None
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._detect_tile(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            tile = self._detect_tile(inp)
+            if tile is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(tile)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CrosshairBoxInteriorSolver(BaseSolver):
+    """
+    Exactly 2 non-bg cells of the SAME color at (r1,c1) and (r2,c2).
+    Output:
+      - Full row r1, full row r2, full col c1, full col c2 → color C
+      - Interior rectangle (rows r1+1..r2-1, cols c1+1..c2-1) → color 1
+    Covers: 21f83797.
+    """
+    name = "crosshair_box_interior_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c, grid[r][c]) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if len(non_bg) != 2:
+            return None
+        (r1, c1, col1), (r2, c2, col2) = non_bg
+        if col1 != col2:
+            return None
+        C = col1
+        out = [row[:] for row in grid]
+        for c in range(W):
+            out[r1][c] = C
+            out[r2][c] = C
+        for r in range(H):
+            out[r][c1] = C
+            out[r][c2] = C
+        min_r, max_r = min(r1, r2), max(r1, r2)
+        min_c, max_c = min(c1, c2), max(c1, c2)
+        for r in range(min_r + 1, max_r):
+            for c in range(min_c + 1, max_c):
+                out[r][c] = 1
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class CrosshairDotSolver(BaseSolver):
+    """
+    Non-bg cells (all same color) on uniform background.
+    For each such cell (r, c):
+      - Fill entire row r and entire col c with the cell color
+      - Set (r, c) = 2
+      - Set diagonal neighbors (r±1, c±1) = 3 (only if they were background)
+    Covers: 140c817e.
+    """
+    name = "crosshair_dot_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if not non_bg:
+            return None
+        colors = {grid[r][c] for r, c in non_bg}
+        if len(colors) != 1:
+            return None
+        cell_color = colors.pop()
+        out = [row[:] for row in grid]
+        # Step 1: fill rows and cols
+        for r, c in non_bg:
+            for cc in range(W):
+                out[r][cc] = cell_color
+            for rr in range(H):
+                out[rr][c] = cell_color
+        # Step 2: mark original cells as 2, diagonal neighbors as 3
+        for r, c in non_bg:
+            out[r][c] = 2
+            for dr, dc in [(-1, -1), (-1, 1), (1, -1), (1, 1)]:
+                nr, nc = r + dr, c + dc
+                if 0 <= nr < H and 0 <= nc < W and grid[nr][nc] == bg:
+                    out[nr][nc] = 3
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class StripeFenceSolver(BaseSolver):
+    """
+    Single non-bg cell at BOTTOM row (H-1), column c, color K.
+    Output:
+      - Columns c, c+2, c+4, ... (stride 2, while < W) entirely filled with K
+      - Connectors at column c+2k+1 for k=0,1,2,...:
+          if k even → row 0 (top) = 5; if k odd → row H-1 (bottom) = 5
+          skip if column out of bounds
+    Covers: 8403a5d5.
+    """
+    name = "stripe_fence_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        flat = [cell for row in grid for cell in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        non_bg = [(r, c, grid[r][c]) for r in range(H) for c in range(W) if grid[r][c] != bg]
+        if len(non_bg) != 1:
+            return None
+        r0, c0, K = non_bg[0]
+        if r0 != H - 1:
+            return None
+        out = [row[:] for row in grid]
+        # Fill stride-2 columns
+        for c in range(c0, W, 2):
+            for r in range(H):
+                out[r][c] = K
+        # Place connectors
+        k = 0
+        while True:
+            conn_col = c0 + 2 * k + 1
+            if conn_col >= W:
+                break
+            conn_row = 0 if k % 2 == 0 else H - 1
+            out[conn_row][conn_col] = 5
+            k += 1
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class TwoEndRowFillSolver(BaseSolver):
+    """
+    Rows where col[0] != 0 AND col[W-1] != 0 are anchor rows.
+    Fill: cols 0..W//2-1 = left color, col W//2 = 5, cols W//2+1..W-1 = right color.
+    Non-anchor rows are unchanged.
+    Covers: 29c11459.
+    """
+    name = "two_end_row_fill_solver"
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        out = [row[:] for row in grid]
+        mid = W // 2
+        for r in range(H):
+            left = grid[r][0]
+            right = grid[r][W - 1]
+            if left != 0 and right != 0:
+                for c in range(mid):
+                    out[r][c] = left
+                out[r][mid] = 5
+                for c in range(mid + 1, W):
+                    out[r][c] = right
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MarkerShootUpSolver(BaseSolver):
+    """
+    Main row (most 1s) has 1s plus special color markers.
+    Each special color shoots upward: special color placed fill_height rows above main row,
+    1s fill rows in between. fill_height per color is LEARNED from training pairs.
+    Covers: 72a961c9.
+    """
+    name = "marker_shoot_up_solver"
+
+    def _find_main_row(self, grid):
+        max_ones, main_row = -1, -1
+        for r, row in enumerate(grid):
+            cnt = sum(1 for c in row if c == 1)
+            if cnt > max_ones:
+                max_ones, main_row = cnt, r
+        return main_row
+
+    def _learn_fill_heights(self, train_pairs):
+        fill_heights = {}
+        for pair in train_pairs:
+            inp, out = pair["input"], pair["output"]
+            if out is None:
+                continue
+            mr = self._find_main_row(inp)
+            W = len(inp[0])
+            out_h = len(out)
+            out_w = len(out[0]) if out else 0
+            for c in range(min(W, out_w)):
+                color = inp[mr][c]
+                if color not in (0, 1):
+                    for r in range(mr - 1, -1, -1):
+                        if r < out_h and out[r][c] == color:
+                            fill_heights[color] = mr - r
+                            break
+        return fill_heights
+
+    def _transform(self, grid, fill_heights):
+        H, W = len(grid), len(grid[0])
+        mr = self._find_main_row(grid)
+        out = [row[:] for row in grid]
+        for c in range(W):
+            color = grid[mr][c]
+            if color not in (0, 1) and color in fill_heights:
+                fh = fill_heights[color]
+                top = mr - fh
+                if top < 0:
+                    return None
+                out[top][c] = color
+                for r in range(top + 1, mr):
+                    out[r][c] = 1
+        return out
+
+    def solve(self, ctx):
+        fill_heights = self._learn_fill_heights(ctx.train_pairs)
+        if not fill_heights:
+            return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"], fill_heights)
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp, fill_heights)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class SameColorBorderGravitySolver(BaseSolver):
+    """
+    Row 0 = all top_color, Row H-1 = all bot_color, rest is bg.
+    Interior connected components of top_color slide UP: topmost cell → row 1.
+    Interior connected components of bot_color slide DOWN: bottommost cell → row H-2.
+    Components processed closest-to-border first.
+    Covers: 17829a00.
+    """
+    name = "same_color_border_gravity_solver"
+
+    def _get_components(self, grid, color, exclude_rows):
+        H, W = len(grid), len(grid[0])
+        visited = [[False] * W for _ in range(H)]
+        components = []
+        for r in range(H):
+            if r in exclude_rows:
+                continue
+            for c in range(W):
+                if grid[r][c] == color and not visited[r][c]:
+                    comp, q = [], [(r, c)]
+                    visited[r][c] = True
+                    while q:
+                        cr, cc = q.pop(0)
+                        comp.append((cr, cc))
+                        for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
+                            nr, nc = cr + dr, cc + dc
+                            if (0 <= nr < H and 0 <= nc < W
+                                    and not visited[nr][nc]
+                                    and grid[nr][nc] == color
+                                    and nr not in exclude_rows):
+                                visited[nr][nc] = True
+                                q.append((nr, nc))
+                    components.append(comp)
+        return components
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        top_color = grid[0][0]
+        bot_color = grid[H - 1][0]
+        if not all(grid[0][c] == top_color for c in range(W)):
+            return None
+        if not all(grid[H - 1][c] == bot_color for c in range(W)):
+            return None
+        if top_color == bot_color:
+            return None
+        flat = [grid[r][c] for r in range(1, H - 1) for c in range(W)]
+        if not flat:
+            return None
+        bg = Counter(flat).most_common(1)[0][0]
+        if bg == top_color or bg == bot_color:
+            return None
+
+        out = [[bg] * W for _ in range(H)]
+        for c in range(W):
+            out[0][c] = top_color
+            out[H - 1][c] = bot_color
+
+        # Top-color components: slide UP, process closest to top first
+        top_comps = self._get_components(grid, top_color, {0, H - 1})
+        top_comps.sort(key=lambda comp: min(r for r, c in comp))
+        for comp in top_comps:
+            min_row = min(r for r, c in comp)
+            shift = min_row - 1
+            for r, c in comp:
+                out[r - shift][c] = top_color
+
+        # Bot-color components: slide DOWN, process closest to bottom first
+        bot_comps = self._get_components(grid, bot_color, {0, H - 1})
+        bot_comps.sort(key=lambda comp: max(r for r, c in comp), reverse=True)
+        for comp in bot_comps:
+            max_row = max(r for r, c in comp)
+            shift = (H - 2) - max_row
+            for r, c in comp:
+                out[r + shift][c] = bot_color
+
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class ComplementaryFillSolver(BaseSolver):
+    """
+    bg=7, marker=8. Grid split into groups by all-bg rows.
+    Each group has 8-cells packed from col 0 (jagged counts per row) and
+    colored cells on right side.
+    Complementarity rule: group_i.eight_counts[r] + group_j.color_counts[r] = K for all r.
+    Output: each group gets matched colors placed immediately right of its 8s;
+    8s stay at cols 0..ec-1, colors at cols ec..ec+cc-1, rest = bg.
+    Covers: 18447a8d.
+    """
+    name = "complementary_fill_solver"
+
+    BG = 7
+    MARKER = 8
+
+    def _split_groups(self, grid):
+        groups = []
+        current, start = [], None
+        for r, row in enumerate(grid):
+            if all(c == self.BG for c in row):
+                if current:
+                    groups.append((start, current))
+                    current, start = [], None
+            else:
+                if start is None:
+                    start = r
+                current.append(row)
+        if current:
+            groups.append((start, current))
+        return groups
+
+    def _extract(self, rows, W):
+        eight_counts, color_shapes = [], []
+        for row in rows:
+            ec = sum(1 for c in row if c == self.MARKER)
+            eight_counts.append(ec)
+            colors = [row[c] for c in range(W) if row[c] not in (self.BG, self.MARKER)]
+            color_shapes.append(colors)
+        return eight_counts, color_shapes
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        groups = self._split_groups(grid)
+        if len(groups) < 2:
+            return None
+
+        gdata = []
+        for start_row, rows in groups:
+            ec, cs = self._extract(rows, W)
+            gdata.append({'start': start_row, 'rows': rows,
+                          'ec': ec, 'cs': cs, 'n': len(rows)})
+
+        n = len(gdata)
+        K = None
+        for i in range(n):
+            for j in range(n):
+                if gdata[i]['n'] != gdata[j]['n']:
+                    continue
+                sums = [gdata[i]['ec'][r] + len(gdata[j]['cs'][r])
+                        for r in range(gdata[i]['n'])]
+                if len(set(sums)) == 1 and sums[0] > 0:
+                    K = sums[0]
+                    break
+            if K is not None:
+                break
+        if K is None:
+            return None
+
+        match = [-1] * n
+        used = set()
+        for i in range(n):
+            for j in range(n):
+                if j in used or gdata[i]['n'] != gdata[j]['n']:
+                    continue
+                sums = [gdata[i]['ec'][r] + len(gdata[j]['cs'][r])
+                        for r in range(gdata[i]['n'])]
+                if all(s == K for s in sums):
+                    match[i] = j
+                    used.add(j)
+                    break
+        if any(m == -1 for m in match):
+            return None
+
+        out = [[self.BG] * W for _ in range(H)]
+        for i, (start_row, rows) in enumerate(groups):
+            src = gdata[match[i]]
+            for ri in range(gdata[i]['n']):
+                r = start_row + ri
+                ec = gdata[i]['ec'][ri]
+                for c in range(ec):
+                    out[r][c] = self.MARKER
+                for k, color in enumerate(src['cs'][ri]):
+                    col = ec + k
+                    if col < W:
+                        out[r][col] = color
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)
+
+
+@register_solver
+class MarkerTrailMoveSolver(BaseSolver):
+    """
+    A 3×3 box of 2s (center = 3) sits on a periodic trail of 3s (period 2).
+    Trail runs along the row or column passing through the box center.
+    Box moves ONE step (period = 2) toward the side with MORE trail markers outside the box.
+    Old center position is restored to 3 (trail marker) after the box moves.
+    Covers: 5168d44c.
+    """
+    name = "marker_trail_move_solver"
+
+    def _find_box_center(self, grid):
+        H, W = len(grid), len(grid[0])
+        for r in range(1, H - 1):
+            for c in range(1, W - 1):
+                if grid[r][c] == 3:
+                    if all(grid[r + dr][c + dc] == 2
+                           for dr in (-1, 0, 1) for dc in (-1, 0, 1)
+                           if (dr, dc) != (0, 0)):
+                        return r, c
+        return None, None
+
+    def _transform(self, grid):
+        H, W = len(grid), len(grid[0])
+        bg = Counter(cell for row in grid for cell in row).most_common(1)[0][0]
+
+        br, bc = self._find_box_center(grid)
+        if br is None:
+            return None
+
+        # Trail cells: 3s outside the box area
+        trail = [(r, c) for r in range(H) for c in range(W)
+                 if grid[r][c] == 3
+                 and not (br - 1 <= r <= br + 1 and bc - 1 <= c <= bc + 1)]
+
+        if not trail:
+            return None
+
+        # Determine axis
+        row_set = {r for r, c in trail}
+        col_set = {c for r, c in trail}
+
+        if len(col_set) == 1 and list(col_set)[0] == bc:
+            axis = 'v'
+        elif len(row_set) == 1 and list(row_set)[0] == br:
+            axis = 'h'
+        else:
+            return None
+
+        if axis == 'v':
+            up = sum(1 for r, c in trail if r < br)
+            dn = sum(1 for r, c in trail if r > br)
+            new_br = br - 2 if up > dn else br + 2
+            new_bc = bc
+        else:
+            lt = sum(1 for r, c in trail if c < bc)
+            rt = sum(1 for r, c in trail if c > bc)
+            new_br = br
+            new_bc = bc - 2 if lt > rt else bc + 2
+
+        if not (1 <= new_br <= H - 2 and 1 <= new_bc <= W - 2):
+            return None
+
+        out = [row[:] for row in grid]
+        # Clear old box
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                out[br + dr][bc + dc] = bg
+        # Restore trail marker at old center
+        out[br][bc] = 3
+        # Place new box
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                out[new_br + dr][new_bc + dc] = 2
+        out[new_br][new_bc] = 3
+        return out
+
+    def solve(self, ctx):
+        for pair in ctx.train_pairs:
+            pred = self._transform(pair["input"])
+            if pred is None or pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+        results = []
+        for inp in ctx.test_inputs:
+            out = self._transform(inp)
+            if out is None:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier="dsa")
+            results.append(out)
+        return _make_result_list(ctx, results, self.name)

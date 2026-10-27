@@ -214,3 +214,202 @@ class PerimeterBFSCavitySolver(BaseSolver):
             preds.append(Prediction(attempt_1=grid, attempt_2=grid,
                                     solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
+
+
+# ===========================================================================
+# 3. ShapeRecolorByKeyColorSolver  —  task aabf363d
+# ===========================================================================
+#
+# Rule:
+#   Grid contains one main shape (all cells of one non-bg color) and a single
+#   "key" cell at a corner of the grid (row 0 or last row, col 0 or last col).
+#   Output: all main-shape cells → key color; key cell → bg (0).
+#   Works regardless of which corner the key cell occupies.
+#
+# ===========================================================================
+
+@register_solver
+class ShapeRecolorByKeyColorSolver(BaseSolver):
+    name = "ShapeRecolorByKeyColorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 11  # just after PaletteRemapInducerSolver (10)
+
+    def _find_key_cell(self, grid):
+        """Return (row, col, color) of isolated corner key cell, or None."""
+        H, W = len(grid), len(grid[0])
+        corners = [(0, 0), (0, W-1), (H-1, 0), (H-1, W-1)]
+        from collections import Counter
+        flat = [v for row in grid for v in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        for r, c in corners:
+            v = grid[r][c]
+            if v == bg:
+                continue
+            # Count all cells of this color
+            n = sum(1 for row in grid for cell in row if cell == v)
+            if n == 1:
+                return r, c, v
+        return None
+
+    def _solve_one(self, inp):
+        H, W = len(inp), len(inp[0])
+        from collections import Counter
+        flat = [v for row in inp for v in row]
+        bg = Counter(flat).most_common(1)[0][0]
+        key = self._find_key_cell(inp)
+        if key is None:
+            return None
+        kr, kc, key_color = key
+        # Find main shape color: most frequent non-bg non-key color
+        non_bg = [(v, cnt) for v, cnt in Counter(flat).items() if v != bg and v != key_color]
+        if not non_bg:
+            return None
+        shape_color = max(non_bg, key=lambda x: x[1])[0]
+        out = [row[:] for row in inp]
+        for r in range(H):
+            for c in range(W):
+                if out[r][c] == shape_color:
+                    out[r][c] = key_color
+        out[kr][kc] = bg
+        return out
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        # Verify all training pairs
+        for p in ctx.train_pairs:
+            pred = self._solve_one(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._solve_one(inp)
+            if g is None:
+                return None
+            preds.append(Prediction(attempt_1=g, attempt_2=g,
+                                    solver_name=self.name, confidence=1.0))
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
+
+
+# ===========================================================================
+# 4. SeedAdjacentGroupRecolorSolver  —  task b7256dcd
+# ===========================================================================
+#
+# Rule:
+#   Background = bg (most-frequent color).
+#   Main shape color = second most-frequent color.
+#   "Seed" cells = isolated single cells that are neither bg nor main shape.
+#   For each seed, find the 4-connected group of main-shape cells that is
+#   4-adjacent (shares an edge) to the seed.  Recolor that group to seed color.
+#   Seed cell itself becomes bg.
+#   Main-shape groups with no adjacent seed remain unchanged.
+#
+# ===========================================================================
+
+@register_solver
+class SeedAdjacentGroupRecolorSolver(BaseSolver):
+    name = "SeedAdjacentGroupRecolorSolver"
+
+    @property
+    def priority(self) -> int:
+        return 79
+
+    def _find_groups(self, grid, color):
+        """Return list of 4-connected component cell-sets for a given color."""
+        H, W = len(grid), len(grid[0])
+        visited = set()
+        groups = []
+        for r in range(H):
+            for c in range(W):
+                if grid[r][c] == color and (r, c) not in visited:
+                    comp = set()
+                    stack = [(r, c)]
+                    while stack:
+                        cr, cc = stack.pop()
+                        if (cr, cc) in visited: continue
+                        if cr < 0 or cr >= H or cc < 0 or cc >= W: continue
+                        if grid[cr][cc] != color: continue
+                        visited.add((cr, cc))
+                        comp.add((cr, cc))
+                        for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                            stack.append((cr+dr, cc+dc))
+                    groups.append(frozenset(comp))
+        return groups
+
+    def _apply(self, inp):
+        H, W = len(inp), len(inp[0])
+        from collections import Counter
+        flat = [v for row in inp for v in row]
+        cnt = Counter(flat)
+        if len(cnt) < 3:
+            return None
+        bg = cnt.most_common(1)[0][0]
+        shape_color = cnt.most_common(2)[1][0]
+
+        # Find seed cells: isolated single non-bg non-shape cells
+        seeds = []
+        for r in range(H):
+            for c in range(W):
+                v = inp[r][c]
+                if v == bg or v == shape_color:
+                    continue
+                # Must be isolated (no 4-neighbor of same color)
+                neighbors_same = sum(
+                    1 for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]
+                    if 0 <= r+dr < H and 0 <= c+dc < W and inp[r+dr][c+dc] == v
+                )
+                if neighbors_same == 0:
+                    seeds.append((r, c, v))
+
+        if not seeds:
+            return None
+
+        # Get all shape groups
+        groups = self._find_groups(inp, shape_color)
+
+        # Build adjacency: seed → group
+        seed_group_map = {}
+        for sr, sc, sv in seeds:
+            adj_cells = set()
+            for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
+                nr, nc = sr+dr, sc+dc
+                if 0 <= nr < H and 0 <= nc < W and inp[nr][nc] == shape_color:
+                    adj_cells.add((nr, nc))
+            # Find which group these adjacent cells belong to
+            matched_groups = set()
+            for g in groups:
+                if g & adj_cells:
+                    matched_groups.add(g)
+            if len(matched_groups) > 1:
+                return None  # ambiguous — seed touches multiple groups
+            if len(matched_groups) == 1:
+                seed_group_map[(sr, sc)] = (sv, next(iter(matched_groups)))
+            else:
+                # No adjacent shape group — seed just becomes bg
+                seed_group_map[(sr, sc)] = (None, None)
+
+        out = [row[:] for row in inp]
+        for (sr, sc), (sv, grp) in seed_group_map.items():
+            if grp is not None:
+                for r, c in grp:
+                    out[r][c] = sv
+            out[sr][sc] = bg
+        return out
+
+    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+        if not ctx.train_pairs:
+            return None
+        for p in ctx.train_pairs:
+            pred = self._apply(p["input"])
+            if pred is None or pred != p["output"]:
+                return None
+        preds = []
+        for inp in ctx.test_inputs:
+            g = self._apply(inp)
+            if g is None:
+                return None
+            preds.append(Prediction(attempt_1=g, attempt_2=g,
+                                    solver_name=self.name, confidence=1.0))
+        return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)

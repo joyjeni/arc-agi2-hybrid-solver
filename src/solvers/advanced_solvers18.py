@@ -23,6 +23,8 @@ def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> Solve
 def _verify_exact(out: Grid, expected: Grid) -> bool:
     if len(out) != len(expected):
         return False
+    if out and expected and len(out[0]) != len(expected[0]):
+        return False
     return all(out[r][c] == expected[r][c]
                for r in range(len(out)) for c in range(len(out[0])))
 

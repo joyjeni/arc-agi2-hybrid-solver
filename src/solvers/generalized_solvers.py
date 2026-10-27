@@ -303,6 +303,10 @@ class PaletteRemapInducerSolver(BaseSolver):
         results = []
         for test_in in ctx.test_inputs:
             H, W = _shape(test_in)
+            # Reject if any test color has no mapping (would silently keep wrong value)
+            test_colors = {test_in[r][c] for r in range(H) for c in range(W)}
+            if not test_colors.issubset(mapping.keys()):
+                return None
             pred = [[mapping.get(test_in[r][c], test_in[r][c]) for c in range(W)] for r in range(H)]
             results.append(pred)
         return _make_result_list(ctx, results, self.name)
@@ -597,8 +601,7 @@ class ObjectRecolorBySizeSolver(BaseSolver):
             for rank, comp in enumerate(comps):
                 col = rank_map.get(rank)
                 if col is None:
-                    # Use last known rank color for overflow
-                    col = rank_map.get(len(rank_map)-1, bg)
+                    return None  # unknown rank — don't guess
                 for r, c in comp:
                     pred[r][c] = col
             if pred != out:
@@ -612,7 +615,7 @@ class ObjectRecolorBySizeSolver(BaseSolver):
             for rank, comp in enumerate(comps):
                 col = rank_map.get(rank)
                 if col is None:
-                    col = rank_map.get(len(rank_map)-1, bg)
+                    return None  # unknown rank for test — abort
                 for r, c in comp:
                     pred[r][c] = col
             results.append(pred)
@@ -1483,6 +1486,16 @@ class ColorFreqReplaceSolver(BaseSolver):
         if not rule:
             return None
 
+        # All colors seen in ANY training input (includes bg/passthrough colors
+        # that are not in rule.keys() because they pass through unchanged)
+        training_input_colors: set = set()
+        for p in pairs:
+            inp = p["input"]
+            H, W = _shape(inp)
+            for r in range(H):
+                for c in range(W):
+                    training_input_colors.add(inp[r][c])
+
         def apply_fn(g):
             H, W = _shape(g)
             return [[rule.get(g[r][c], g[r][c]) for c in range(W)] for r in range(H)]
@@ -1491,7 +1504,14 @@ class ColorFreqReplaceSolver(BaseSolver):
             if apply_fn(p["input"]) != p["output"]:
                 return None
 
-        results = [apply_fn(t) for t in ctx.test_inputs]
+        results = []
+        for t in ctx.test_inputs:
+            H, W = _shape(t)
+            test_colors = {t[r][c] for r in range(H) for c in range(W)}
+            # Reject only if test has a color never seen in any training input
+            if not test_colors.issubset(training_input_colors):
+                return None
+            results.append(apply_fn(t))
         if all(r == t for r, t in zip(results, ctx.test_inputs)):
             return None
         return _make_result_list(ctx, results, self.name)

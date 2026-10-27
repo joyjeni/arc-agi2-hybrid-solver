@@ -1096,5 +1096,10 @@ class ColorRemapFromPaletteSolver(BaseSolver):
         # Verify
         for p in ctx.train_pairs:
             if self._apply(p["input"], cmap) != p["output"]: return None
-        preds = [self._apply(inp, cmap) for inp in ctx.test_inputs]
+        preds = []
+        for inp in ctx.test_inputs:
+            test_colors = {v for row in inp for v in row}
+            if not test_colors.issubset(cmap.keys()):
+                return None
+            preds.append(self._apply(inp, cmap))
         return _result(ctx, preds, self.name)

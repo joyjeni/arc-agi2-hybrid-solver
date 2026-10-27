@@ -476,36 +476,72 @@ class TileWithFlipSolver(BaseSolver):
                     return (rr, rc, fh, fv)
         return None
 
+    def _infer_reps(self, inp, train_pairs):
+        """Infer reps for test when training reps vary.
+        Tries: num_distinct_colors, input_H, input_W."""
+        ih, iw = _sh(inp)
+        n_colors = len({v for row in inp for v in row})
+        for rr_cand in [n_colors, ih, iw]:
+            ok = True
+            for p in train_pairs:
+                pi_h, pi_w = _sh(p["input"])
+                po_h, po_w = _sh(p["output"])
+                p_n_colors = len({v for row in p["input"] for v in row})
+                p_rr_h = pi_h
+                if rr_cand == n_colors:
+                    expected_rr = p_n_colors
+                elif rr_cand == ih:
+                    expected_rr = p_rr_h
+                else:
+                    expected_rr = pi_w
+                if po_h != pi_h * expected_rr or po_w != pi_w * expected_rr:
+                    ok = False; break
+            if ok:
+                # compute actual rr/rc for this test input
+                if rr_cand == n_colors:
+                    return n_colors, n_colors
+                elif rr_cand == ih:
+                    return ih, ih
+                else:
+                    return iw, iw
+        return None
+
     def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
 
         params = None
+        train_reps = []
         for p in train_pairs:
             if p["output"] is None:
                 return None
             result = self._try_tile_and_flip(p["input"], p["output"])
             if result is None:
                 return None
+            rr, rc, fh, fv = result
+            train_reps.append((rr, rc))
             if params is None:
-                params = result[2:]  # (fh, fv)
-            elif params != result[2:]:
+                params = (fh, fv)
+            elif params != (fh, fv):
                 return None
 
         fh, fv = params
+        reps_fixed = len(set(train_reps)) == 1  # all same reps across training
+
         preds = []
         for inp in ctx.test_inputs:
-            ih, iw = _sh(inp)
-            # Infer reps from training ratio
-            p0 = train_pairs[0]
-            oh0, ow0 = _sh(p0["output"])
-            ih0, iw0 = _sh(p0["input"])
-            rr = oh0 // ih0
-            rc = ow0 // iw0
+            if reps_fixed:
+                rr, rc = train_reps[0]
+            else:
+                inferred = self._infer_reps(inp, train_pairs)
+                if inferred is None:
+                    return None
+                rr, rc = inferred
             preds.append(self._build_tiled(inp, rr, rc, fh, fv))
 
         return _result(ctx, preds, self.name)
+
 
 
 # ── 5. ObjectRecolorByShapeSolver ─────────────────────────────────────────────
@@ -563,18 +599,13 @@ class ObjectRecolorByShapeSolver(BaseSolver):
             shape_map[sk] = tgt
         return shape_map
 
-    def _apply_shape_map(self, grid: Grid, shape_map: dict, bg: int) -> Grid:
+    def _apply_shape_map(self, grid: Grid, shape_map: dict, bg: int) -> Optional[Grid]:
         objs = self._classify_objects(grid, bg)
         out = _clone(grid)
         for src_color, cells, sk in objs:
             tgt = shape_map.get(sk)
             if tgt is None:
-                # Find closest shape key by area
-                if not shape_map:
-                    tgt = src_color
-                else:
-                    closest = min(shape_map.keys(), key=lambda k: abs(k[2]-sk[2]))
-                    tgt = shape_map[closest]
+                return None  # unknown shape — don't guess
             for r, c in cells:
                 out[r][c] = tgt
         return out
