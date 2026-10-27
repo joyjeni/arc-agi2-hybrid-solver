@@ -21,8 +21,13 @@ def _copy_grid(g: Grid) -> Grid:
 def _verify_exact(out: Grid, expected: Grid) -> bool:
     if len(out) != len(expected):
         return False
-    return all(out[r][c] == expected[r][c]
-               for r in range(len(out)) for c in range(len(out[0])))
+    for r in range(len(out)):
+        if len(out[r]) != len(expected[r]):
+            return False
+        for c in range(len(out[r])):
+            if out[r][c] != expected[r][c]:
+                return False
+    return True
 
 
 # ===========================================================================

@@ -204,6 +204,8 @@ class GravityDownOneRowGapSolver(BaseSolver):
     def _detect_bg_struct(self, inp: Grid):
         rows, cols = len(inp), len(inp[0])
         non_bottom = [inp[r][c] for r in range(rows - 1) for c in range(cols)]
+        if not non_bottom:
+            return None, None
         bg = Counter(non_bottom).most_common(1)[0][0]
         bottom_non_bg = [v for v in inp[rows - 1] if v != bg]
         struct_color = Counter(bottom_non_bg).most_common(1)[0][0] if bottom_non_bg else None
