@@ -470,5 +470,37 @@
     "errors": 0,
     "wrong_ids": [],
     "error_ids": []
+  },
+  "CrossMoveAwayFromFiveSolver": {
+    "module": 29,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "DiagonalRaysFromBlockCornersSolver": {
+    "module": 29,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "FiveGravityToBlockSolver": {
+    "module": 29,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
+  },
+  "SpineExtrusionSolver": {
+    "module": 29,
+    "solved": 1,
+    "wrong": 0,
+    "errors": 0,
+    "wrong_ids": [],
+    "error_ids": []
   }
 }
