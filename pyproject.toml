@@ -34,6 +34,8 @@ addopts   = "-v --tb=short"
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+# Vendored third-party code is kept as published (only an attribution header added).
+extend-exclude = ["src/addon/third_party"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
