@@ -171,3 +171,44 @@ def test_motif_family_recolours_every_copy_of_learned_shape():
     test = grid(9, 9, [(2, 2), (6, 6)], [(0, 0), (8, 0)])
     assert verify(motif_recolour, train)
     assert motif_recolour(train, [test["input"]]) == [test["output"]]
+
+
+def test_mirror_family_reflects_across_marker_line():
+    from src.addon.families import mirror_reflect
+
+    def make(h, w, objs):
+        """objs: (mirror_col, shape cells left of it, colour)."""
+        g = [[0] * w for _ in range(h)]
+        out = [[0] * w for _ in range(h)]
+        for col, r0, r1, cells, colour in objs:
+            for r in range(r0, r1):
+                g[r][col] = out[r][col] = 2
+            for r, c in cells:
+                g[r][c] = out[r][c] = colour
+                out[r][2 * col - c] = colour
+        return {"input": g, "output": out}
+
+    train = [make(8, 10, [(4, 1, 4, [(1, 3), (2, 2), (2, 3)], 5)]),
+             make(9, 11, [(5, 2, 6, [(3, 4), (4, 3), (5, 4)], 6)]),
+             make(10, 12, [(6, 0, 3, [(0, 5), (1, 4), (1, 5), (2, 5)], 3)])]
+    test = make(10, 10, [(3, 4, 7, [(4, 2), (5, 1), (6, 2)], 4)])
+    assert verify(mirror_reflect, train)
+    assert mirror_reflect(train, [test["input"]]) == [test["output"]]
+
+
+def test_rays_family_draws_learned_directions():
+    from src.addon.families import rays
+
+    def make(h, w, seeds):
+        g = [[0] * w for _ in range(h)]
+        out = [[0] * w for _ in range(h)]
+        for r, c in seeds:
+            g[r][c] = out[r][c] = 3
+            for y in range(r):  # ray upwards in colour 3
+                out[y][c] = 3
+        return {"input": g, "output": out}
+
+    train = [make(6, 6, [(4, 1)]), make(7, 5, [(5, 3), (6, 0)]), make(5, 7, [(3, 5)])]
+    test = make(8, 8, [(6, 2), (7, 6)])
+    assert verify(rays, train)
+    assert rays(train, [test["input"]]) == [test["output"]]

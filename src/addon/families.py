@@ -574,6 +574,290 @@ def local_rule(train, test_inputs):
 
 
 
+
+# ── family: reflect shapes across an attached mirror ─────────────────────────
+
+def _reflect_fn(mcells: list[tuple[int, int]]):
+    """Reflection defined by the mirror cells: a straight line (row, column or diagonal)
+    or a single point. Returns f(r, c) -> (r', c'), or None if the cells form no mirror."""
+    rows = {r for r, _ in mcells}
+    cols = {c for _, c in mcells}
+    if len(mcells) == 1:
+        r0, c0 = mcells[0]
+        return lambda r, c: (2 * r0 - r, 2 * c0 - c)
+    if len(cols) == 1 and len(rows) == len(mcells):
+        c0 = next(iter(cols))
+        return lambda r, c: (r, 2 * c0 - c)
+    if len(rows) == 1 and len(cols) == len(mcells):
+        r0 = next(iter(rows))
+        return lambda r, c: (2 * r0 - r, c)
+    diffs = {r - c for r, c in mcells}
+    sums = {r + c for r, c in mcells}
+    if len(diffs) == 1 and len(mcells) == len(rows):
+        d = next(iter(diffs))
+        return lambda r, c: (c + d, r - d)
+    if len(sums) == 1 and len(mcells) == len(rows):
+        e = next(iter(sums))
+        return lambda r, c: (e - c, e - r)
+    return None
+
+
+def _apply_mirror(a: np.ndarray, m: int) -> np.ndarray | None:
+    bg = _bg(a)
+    if m == bg or not (a == m).any():
+        return None
+    out = a.copy()
+    h, w = a.shape
+    did = False
+    for comp in _components(a, bg, diag=True, multicolor=True):
+        cells = list(zip(*np.nonzero(comp["mask"])))
+        mcells = [(r, c) for r, c in cells if a[r, c] == m]
+        rest = [(r, c) for r, c in cells if a[r, c] != m]
+        if not mcells or not rest:
+            continue
+        f = _reflect_fn(mcells)
+        if f is None:
+            return None  # a marker that is not a line or a point: rule does not apply
+        for r, c in rest:
+            r2, c2 = f(r, c)
+            if not (0 <= r2 < h and 0 <= c2 < w):
+                return None
+            if out[r2, c2] == bg:
+                out[r2, c2] = a[r, c]
+            elif out[r2, c2] != a[r, c]:
+                return None
+        did = True
+    return out if did else None
+
+
+def mirror_reflect(train, test_inputs):
+    """Shapes are reflected across the marker of a learned colour they touch."""
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    colours = set.intersection(*[set(np.unique(_arr(p["input"])).tolist()) for p in train])
+    answers: list[list[Grid]] = []
+    for m in sorted(colours):
+        if not all((r := _apply_mirror(_arr(p["input"]), m)) is not None
+                   and np.array_equal(r, _arr(p["output"])) for p in train):
+            continue
+        out = []
+        for g in test_inputs:
+            r = _apply_mirror(_arr(g), m)
+            if r is None:
+                return None
+            out.append(r.tolist())
+        answers.append(out)
+    return _consensus(answers)
+
+
+
+# ── family: rays from seed cells ──────────────────────────────────────────────
+
+_DIRS = {"N": (-1, 0), "S": (1, 0), "W": (0, -1), "E": (0, 1),
+         "NW": (-1, -1), "NE": (-1, 1), "SW": (1, -1), "SE": (1, 1)}
+_DIR_SETS = [("N",), ("S",), ("W",), ("E",), ("N", "S"), ("W", "E"), ("N", "S", "W", "E"),
+             ("NW",), ("NE",), ("SW",), ("SE",), ("NW", "SE"), ("NE", "SW"),
+             ("NW", "NE", "SW", "SE"), tuple(_DIRS)]
+
+
+def _draw_rays(a: np.ndarray, seed: int, dirs, paint: int | None, stop: bool) -> np.ndarray:
+    bg = _bg(a)
+    out = a.copy()
+    h, w = a.shape
+    for r, c in zip(*np.nonzero(a == seed)):
+        colour = seed if paint is None else paint
+        for d in dirs:
+            dy, dx = _DIRS[d]
+            y, x = r + dy, c + dx
+            while 0 <= y < h and 0 <= x < w:
+                if a[y, x] != bg:
+                    if stop:
+                        break
+                else:
+                    out[y, x] = colour
+                y, x = y + dy, x + dx
+    return out
+
+
+def rays(train, test_inputs):
+    """From every cell of a learned seed colour, draw lines in learned directions."""
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    pairs = [(_arr(p["input"]), _arr(p["output"])) for p in train]
+    if all(np.array_equal(a, o) for a, o in pairs):
+        return None
+    seeds = set.intersection(*[set(np.unique(a).tolist()) for a, _ in pairs])
+    new_cols = set().union(*[set(np.unique(o[a != o]).tolist()) for a, o in pairs])
+    answers: list[list[Grid]] = []
+    for seed in sorted(seeds):
+        if any(seed == _bg(a) for a, _ in pairs):
+            continue
+        for paint in [None] + sorted(new_cols - {seed}):
+            for dirs in _DIR_SETS:
+                for stop in (True, False):
+                    if all(np.array_equal(_draw_rays(a, seed, dirs, paint, stop), o)
+                           for a, o in pairs):
+                        answers.append([_draw_rays(_arr(g), seed, dirs, paint, stop).tolist()
+                                        for g in test_inputs])
+    return _consensus(answers)
+
+
+
+# ── family: align objects to a reference marker ──────────────────────────────
+
+def _align(a: np.ndarray, k: int, axis: str) -> np.ndarray | None:
+    """Move every object holding one cell of marker colour k so that cell lines up with the
+    reference: the column (axis 'col') or row (axis 'row') of the marker-only objects."""
+    bg = _bg(a)
+    if k == bg:
+        return None
+    comps = _components(a, bg, diag=True, multicolor=True)
+    refs, movers = [], []
+    for comp in comps:
+        cols = set(np.unique(a[comp["mask"]]).tolist())
+        kcells = list(zip(*np.nonzero(comp["mask"] & (a == k))))
+        if cols == {k}:
+            refs.extend(kcells)
+        elif len(kcells) == 1:
+            movers.append((comp, kcells[0]))
+    if not refs or not movers:
+        return None
+    target = {c for _, c in refs} if axis == "col" else {r for r, _ in refs}
+    if len(target) != 1:
+        return None
+    t = target.pop()
+    out = a.copy()
+    h, w = a.shape
+    moves = []
+    for comp, (kr, kc) in movers:
+        dy, dx = (0, t - kc) if axis == "col" else (t - kr, 0)
+        cells = list(zip(*np.nonzero(comp["mask"])))
+        moves.append([(r, c, r + dy, c + dx, a[r, c]) for r, c in cells])
+    for mv in moves:
+        for r, c, _, _, _ in mv:
+            out[r, c] = bg
+    for mv in moves:
+        for _, _, r2, c2, v in mv:
+            if not (0 <= r2 < h and 0 <= c2 < w) or out[r2, c2] != bg:
+                return None
+            out[r2, c2] = v
+    return out
+
+
+def _align_auto(a: np.ndarray, default_axis: str) -> np.ndarray | None:
+    """Several marker colours allowed. A marker's stand-alone reference cells set its axis:
+    on the left/right edge -> line up rows, on the top/bottom edge -> line up columns,
+    elsewhere -> `default_axis`. Each object follows the one marker colour it contains."""
+    bg = _bg(a)
+    h, w = a.shape
+    comps = _components(a, bg, diag=True, multicolor=True)
+    refs: dict[int, list[tuple[int, int]]] = {}
+    for comp in comps:
+        cols = set(np.unique(a[comp["mask"]]).tolist())
+        if len(cols) == 1:
+            k = cols.pop()
+            refs.setdefault(k, []).extend(zip(*np.nonzero(comp["mask"])))
+    targets = {}
+    for k, cells in refs.items():
+        on_lr = all(c in (0, w - 1) for _, c in cells)
+        on_tb = all(r in (0, h - 1) for r, _ in cells)
+        axis = "row" if on_lr and not on_tb else "col" if on_tb and not on_lr else default_axis
+        vals = {r for r, _ in cells} if axis == "row" else {c for _, c in cells}
+        if len(vals) == 1:
+            targets[k] = (axis, vals.pop())
+    if not targets:
+        return None
+    moves = []
+    for comp in comps:
+        cols = set(np.unique(a[comp["mask"]]).tolist())
+        if len(cols) == 1:
+            continue
+        hits = [(k, list(zip(*np.nonzero(comp["mask"] & (a == k))))) for k in targets]
+        hits = [(k, cells) for k, cells in hits if cells]
+        if not hits:
+            continue
+        if len(hits) != 1 or len(hits[0][1]) != 1:
+            return None
+        k, [(kr, kc)] = hits[0]
+        axis, t = targets[k]
+        dy, dx = (t - kr, 0) if axis == "row" else (0, t - kc)
+        moves.append([(r, c, r + dy, c + dx, a[r, c]) for r, c in zip(*np.nonzero(comp["mask"]))])
+    if not moves:
+        return None
+    out = a.copy()
+    for mv in moves:
+        for r, c, _, _, _ in mv:
+            out[r, c] = bg
+    for mv in moves:
+        for _, _, r2, c2, v in mv:
+            if not (0 <= r2 < h and 0 <= c2 < w) or out[r2, c2] != bg:
+                return None
+            out[r2, c2] = v
+    return out
+
+
+def _marker_colour(a: np.ndarray) -> int | None:
+    """The colour that forms stand-alone reference objects and occurs exactly once in every
+    other object (None unless exactly one colour fits)."""
+    bg = _bg(a)
+    comps = _components(a, bg, diag=True, multicolor=True)
+    found = []
+    for k in np.unique(a).tolist():
+        if k == bg:
+            continue
+        refs = others = 0
+        ok = True
+        for comp in comps:
+            cols = set(np.unique(a[comp["mask"]]).tolist())
+            if cols == {k}:
+                refs += 1
+            else:
+                others += 1
+                ok &= int((comp["mask"] & (a == k)).sum()) == 1
+        if ok and refs and others:
+            found.append(k)
+    return found[0] if len(found) == 1 else None
+
+
+def align_to_marker(train, test_inputs):
+    """Objects slide so their marker cell lines up with a stand-alone marker. The marker colour
+    is either fixed (learned) or detected per grid."""
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    colours = set.intersection(*[set(np.unique(_arr(p["input"])).tolist()) for p in train])
+    choosers = [("fixed", k) for k in sorted(colours)] + [("auto", None)]
+    answers: list[list[Grid]] = []
+    for how, k in choosers:
+        def pick(a, how=how, k=k):
+            return k if how == "fixed" else _marker_colour(a)
+        for axis in ("col", "row"):
+            if not all((kk := pick(_arr(p["input"]))) is not None
+                       and (r := _align(_arr(p["input"]), kk, axis)) is not None
+                       and np.array_equal(r, _arr(p["output"])) for p in train):
+                continue
+            out = []
+            for g in test_inputs:
+                a = _arr(g)
+                kk = pick(a)
+                r = _align(a, kk, axis) if kk is not None else None
+                if r is None:
+                    return None
+                out.append(r.tolist())
+            answers.append(out)
+    for axis in ("col", "row"):
+        if not all((r := _align_auto(_arr(p["input"]), axis)) is not None
+                   and np.array_equal(r, _arr(p["output"])) for p in train):
+            continue
+        out = []
+        for g in test_inputs:
+            r = _align_auto(_arr(g), axis)
+            if r is None:
+                return None
+            out.append(r.tolist())
+        answers.append(out)
+    return _consensus(answers)
+
+
 FAMILIES = [
     ("family:symmetry", symmetry),
     ("family:periodic", periodic),
@@ -581,4 +865,7 @@ FAMILIES = [
     ("family:partition", partition),
     ("family:motif", motif_recolour),
     ("family:local", local_rule),
+    ("family:mirror", mirror_reflect),
+    ("family:rays", rays),
+    ("family:align", align_to_marker),
 ]
