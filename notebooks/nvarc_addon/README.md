@@ -19,19 +19,19 @@ untouched.
 
 | Split | Correct outputs | Wrong outputs | Time (1 CPU core) |
 |---|---|---|---|
-| Evaluation, 120 tasks (unseen, held out) | 4 (3 tasks) | 0 | 28 s |
-| Training, 1000 tasks | 337 | 0 | 123 s |
+| Evaluation, 120 tasks | 5 (4 tasks) | 0 | 32 s |
+| Training, 1000 tasks | 338 | 0 | 128 s |
 
 Sources, in the order they are tried:
 
 - this repo's 399 solvers
 - `Arc2SymbolicSolver.solve_verified_geometry` (third-party, Apache-2.0, see `src/addon/third_party/arc2_symbolic.py`)
 - a generic program search
-- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, and grid partition (pick a cell, or a boolean overlay of cells)
+- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, grid partition (pick a cell, or a boolean overlay of cells), motif recolouring, and a local 3x3 neighbourhood rule
 
 Families that fit their parameters by choosing among several rules answer only when **every** rule that fits the training pairs agrees on the test input; otherwise they abstain.
 
-The families were developed only on training tasks; the evaluation set was used as a held-out check, not for design.
+Development used the training tasks and a fixed half of the evaluation tasks (by task-id hash); the other half was never inspected. All 4 solved evaluation tasks are in the development half — **0 of the held-out half is solved**, so there is no evidence yet that these rules transfer to unseen tasks.
 
 **Expected effect:** small — roughly 0–2 points on top of NVARC, depending on how many
 hidden tasks the rules fit that NVARC misses. The model does nearly all the solving.

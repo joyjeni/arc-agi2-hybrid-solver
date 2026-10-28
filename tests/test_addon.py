@@ -150,3 +150,24 @@ def test_partition_family_abstains_on_ambiguous_evidence():
     train = [{"input": [[1, 0, 5, 1, 1], [1, 1, 5, 0, 1]], "output": [[3, 0], [0, 3]]},
              {"input": [[0, 1, 5, 1, 1], [1, 0, 5, 1, 1]], "output": [[0, 3], [3, 0]]}]
     assert not verify(partition, train)
+
+
+def test_motif_family_recolours_every_copy_of_learned_shape():
+    from src.addon.families import motif_recolour
+
+    def grid(h, w, plus_at, noise):
+        g = [[2] * w for _ in range(h)]
+        out = [[2] * w for _ in range(h)]
+        for r, c in noise:
+            g[r][c] = out[r][c] = 4
+        for r, c in plus_at:
+            for dr, dc in ((0, 1), (1, 0), (1, 1), (1, 2), (2, 1)):
+                g[r + dr][c + dc] = 4
+                out[r + dr][c + dc] = 8
+        return {"input": g, "output": out}
+
+    train = [grid(8, 8, [(0, 0)], [(6, 6)]), grid(8, 9, [(4, 5)], [(0, 7), (7, 0)]),
+             grid(9, 8, [(1, 4), (5, 0)], [(8, 7)])]
+    test = grid(9, 9, [(2, 2), (6, 6)], [(0, 0), (8, 0)])
+    assert verify(motif_recolour, train)
+    assert motif_recolour(train, [test["input"]]) == [test["output"]]

@@ -459,9 +459,126 @@ def partition(train, test_inputs):
     return _consensus(answers)
 
 
+
+# ── family: motif recolouring ─────────────────────────────────────────────────
+
+def _shape_key(cells: list[tuple[int, int]]) -> tuple:
+    r0 = min(r for r, _ in cells)
+    c0 = min(c for _, c in cells)
+    return tuple(sorted((r - r0, c - c0) for r, c in cells))
+
+
+def motif_recolour(train, test_inputs):
+    """Every copy of a learned shape drawn in colour `a` is repainted in colour `b`."""
+    src = dst = None
+    shapes: set[tuple] = set()
+    for p in train:
+        a, o = _arr(p["input"]), _arr(p["output"])
+        if a.shape != o.shape:
+            return None
+        d = a != o
+        if not d.any():
+            continue
+        ins, outs = np.unique(a[d]), np.unique(o[d])
+        if len(ins) != 1 or len(outs) != 1:
+            return None
+        if src is None:
+            src, dst = int(ins[0]), int(outs[0])
+        elif (src, dst) != (int(ins[0]), int(outs[0])):
+            return None
+        mask = np.where(d, 1, 0)
+        for comp in _components(mask, 0, diag=False, multicolor=False):
+            shapes.add(_shape_key(list(zip(*np.nonzero(comp["mask"])))))
+    if src is None or not shapes or len(shapes) > 3:
+        return None
+    if any(len(sh) < 2 for sh in shapes):
+        return None  # single cells are not a motif
+
+    def paint(a: np.ndarray) -> np.ndarray:
+        out = a.copy()
+        h, w = a.shape
+        for sh in shapes:
+            sr = max(r for r, _ in sh) + 1
+            sc = max(c for _, c in sh) + 1
+            rr = np.array([r for r, _ in sh])
+            cc = np.array([c for _, c in sh])
+            for y in range(h - sr + 1):
+                for x in range(w - sc + 1):
+                    if (a[rr + y, cc + x] == src).all():
+                        out[rr + y, cc + x] = dst
+        return out
+
+    return [paint(_arr(g)).tolist() for g in test_inputs]
+
+
+# ── family: local neighbourhood rule ──────────────────────────────────────────
+
+def _patches(a: np.ndarray, kind: str, bg: int) -> np.ndarray:
+    """One hashable key per cell describing its 3x3 neighbourhood."""
+    h, w = a.shape
+    pad = np.pad(a, 1, constant_values=-1)
+    keys = np.empty((h, w), dtype=object)
+    for r in range(h):
+        for c in range(w):
+            blk = pad[r:r + 3, c:c + 3]
+            if kind == "exact":
+                keys[r, c] = blk.tobytes()
+            elif kind == "cross":
+                keys[r, c] = (blk[0, 1], blk[1, 0], blk[1, 1], blk[1, 2], blk[2, 1])
+            else:  # "shape": centre colour + which neighbours are filled / empty / outside
+                pattern = tuple(np.where(blk == -1, 2, (blk != bg).astype(int)).ravel().tolist())
+                keys[r, c] = (int(blk[1, 1]), pattern)
+    return keys
+
+
+def local_rule(train, test_inputs):
+    """Output cell = learned function of the input's 3x3 neighbourhood. Answers only when every
+    test neighbourhood was seen in training."""
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    answers: list[list[Grid]] = []
+    for kind in ("exact", "cross", "shape"):
+        bg = None
+        if kind == "shape":
+            bgs = {_bg(_arr(p["input"])) for p in train}
+            if len(bgs) != 1:
+                continue
+            bg = bgs.pop()
+        table: dict = {}
+        good = True
+        for p in train:
+            a, o = _arr(p["input"]), _arr(p["output"])
+            keys = _patches(a, kind, bg)
+            for k, v in zip(keys.ravel(), o.ravel().tolist()):
+                if table.setdefault(k, v) != v:
+                    good = False
+                    break
+            if not good:
+                break
+        if not good:
+            continue
+        out = []
+        for g in test_inputs:
+            a = _arr(g)
+            if kind == "shape" and _bg(a) != bg:
+                good = False
+                break
+            keys = _patches(a, kind, bg)
+            if any(k not in table for k in keys.ravel()):
+                good = False
+                break
+            out.append(np.array([table[k] for k in keys.ravel()]).reshape(a.shape).tolist())
+        if good:
+            answers.append(out)
+    return _consensus(answers)
+
+
+
 FAMILIES = [
     ("family:symmetry", symmetry),
     ("family:periodic", periodic),
     ("family:object", object_select),
     ("family:partition", partition),
+    ("family:motif", motif_recolour),
+    ("family:local", local_rule),
 ]
