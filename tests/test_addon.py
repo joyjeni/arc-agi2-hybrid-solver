@@ -74,3 +74,79 @@ def test_solve_task_returns_verified_answer():
     }
     grids, name = solve_task(task, [("search:program", _search)])
     assert grids == [[[5, 4]]] and name == "search:program"
+
+
+# ── rule families ─────────────────────────────────────────────────────────────
+
+def _mirror_task(grid, hole):
+    """Left-right symmetric grid with a rectangle of colour 9 punched in it."""
+    import numpy as np
+    full = np.array(grid)
+    masked = full.copy()
+    r0, r1, c0, c1 = hole
+    masked[r0:r1, c0:c1] = 9
+    return masked.tolist(), full.tolist()
+
+
+def test_symmetry_family_fills_masked_region():
+    from src.addon.families import symmetry
+    base = [[1, 2, 3, 3, 2, 1], [4, 5, 6, 6, 5, 4], [7, 1, 2, 2, 1, 7], [3, 4, 5, 5, 4, 3]]
+    base2 = [[2, 3, 1, 1, 3, 2], [5, 6, 4, 4, 6, 5], [1, 7, 2, 2, 7, 1], [4, 3, 5, 5, 3, 4]]
+    i1, o1 = _mirror_task(base, (0, 2, 0, 2))
+    i2, o2 = _mirror_task(base2, (2, 4, 4, 6))
+    ti, to = _mirror_task(base, (1, 3, 3, 5))
+    train = [{"input": i1, "output": o1}, {"input": i2, "output": o2}]
+    assert verify(symmetry, train)
+    assert symmetry(train, [ti]) == [to]
+
+
+def test_periodic_family_fills_staggered_pattern():
+    from src.addon.families import periodic
+
+    def stagger(h, w, hole):
+        g = [[(c + r) % 3 + 1 for c in range(w)] for r in range(h)]  # diagonal repeat
+        full = [row[:] for row in g]
+        r0, r1, c0, c1 = hole
+        for r in range(r0, r1):
+            for c in range(c0, c1):
+                g[r][c] = 0
+        return g, full
+
+    i1, o1 = stagger(6, 6, (1, 3, 1, 3))
+    i2, o2 = stagger(7, 5, (4, 6, 0, 2))
+    ti, to = stagger(6, 7, (2, 4, 3, 6))
+    train = [{"input": i1, "output": o1}, {"input": i2, "output": o2}]
+    assert verify(periodic, train)
+    assert periodic(train, [ti]) == [to]
+
+
+def test_object_family_abstains_when_fitted_rules_disagree():
+    from src.addon.families import _consensus
+    assert _consensus([[[[1]]], [[[1]]]]) == [[[1]]]
+    assert _consensus([[[[1]]], [[[2]]]]) is None
+    assert _consensus([]) is None
+
+
+def test_partition_family_boolean_overlay():
+    from src.addon.families import partition
+    # two 2x2 halves split by a column of 5; output marks cells set in both halves (AND)
+    def pair(a, b):
+        inp = [ra + [5] + rb for ra, rb in zip(a, b)]
+        out = [[3 if x and y else 0 for x, y in zip(ra, rb)] for ra, rb in zip(a, b)]
+        return {"input": inp, "output": out}
+    # 3x3 cells, mostly background, four examples: enough evidence for one rule only
+    train = [pair([[1, 0, 0], [0, 1, 0], [0, 0, 1]], [[1, 1, 0], [0, 0, 0], [0, 0, 1]]),
+             pair([[0, 0, 1], [0, 1, 0], [1, 0, 0]], [[0, 0, 1], [1, 0, 0], [1, 0, 0]]),
+             pair([[1, 1, 0], [0, 0, 0], [0, 1, 0]], [[0, 1, 0], [0, 0, 1], [0, 1, 0]]),
+             pair([[0, 0, 0], [1, 0, 1], [0, 0, 1]], [[0, 0, 0], [1, 1, 0], [0, 0, 1]])]
+    test = pair([[1, 0, 1], [0, 0, 0], [1, 0, 0]], [[1, 0, 0], [0, 1, 0], [1, 0, 1]])
+    assert verify(partition, train)
+    assert partition(train, [test["input"]]) == [test["output"]]
+
+
+def test_partition_family_abstains_on_ambiguous_evidence():
+    """Tiny cells where several (background, operation) rules fit: the family must abstain."""
+    from src.addon.families import partition
+    train = [{"input": [[1, 0, 5, 1, 1], [1, 1, 5, 0, 1]], "output": [[3, 0], [0, 3]]},
+             {"input": [[0, 1, 5, 1, 1], [1, 0, 5, 1, 1]], "output": [[0, 3], [3, 0]]}]
+    assert not verify(partition, train)

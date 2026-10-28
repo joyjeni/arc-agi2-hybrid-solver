@@ -12,6 +12,8 @@ Sources, tried in order (first verified answer wins):
   * ``geometry``  — Arc2SymbolicSolver.solve_verified_geometry (third_party, Apache-2.0)
   * ``search``    — small generic program search: dihedral transforms, crop, tile,
                     scale, mirror, plus a learned colour map
+  * ``families``  — general rule families (src/addon/families.py): symmetry and periodic
+                    completion, object selection, grid partition
 
 CLI (writes JSON: {task_id: [{"grid": [[...]] | null, "source": str | null}, ...]}):
 
@@ -216,7 +218,15 @@ def search_source() -> list[tuple[str, Source]]:
 
 # ── driver ────────────────────────────────────────────────────────────────────
 
-def all_sources(include: tuple[str, ...] = ("registry", "geometry", "search")):
+def family_sources() -> list[tuple[str, Source]]:
+    from .families import FAMILIES
+    return list(FAMILIES)
+
+
+DEFAULT_SOURCES = ("registry", "geometry", "search", "families")
+
+
+def all_sources(include: tuple[str, ...] = DEFAULT_SOURCES):
     sources: list[tuple[str, Source]] = []
     if "registry" in include:
         sources += registry_sources()
@@ -224,6 +234,8 @@ def all_sources(include: tuple[str, ...] = ("registry", "geometry", "search")):
         sources += geometry_source()
     if "search" in include:
         sources += search_source()
+    if "families" in include:
+        sources += family_sources()
     return sources
 
 
@@ -250,7 +262,7 @@ def _write_atomic(path: Path, data: dict) -> None:
 
 
 def solve_challenges(challenges: dict, budget_s: float = 600.0, timeout_s: float = 2.0,
-                     include: tuple[str, ...] = ("registry", "geometry", "search"),
+                     include: tuple[str, ...] = DEFAULT_SOURCES,
                      checkpoint: Path | None = None, every: int = 10) -> dict:
     """Verified answers for every task, stopping cleanly when the time budget runs out.
 
