@@ -992,6 +992,86 @@ def edge_snap(train, test_inputs):
     return _consensus(answers)
 
 
+
+# ── family: stamp a learned pattern at each single-pixel marker ──────────────
+
+def _seeds(a: np.ndarray) -> list[tuple[int, int, int]]:
+    """Single non-background pixels with no side-neighbour, as (row, col, colour)."""
+    bg = _bg(a)
+    out = []
+    for comp in _components(a, bg, diag=False, multicolor=True):
+        if int(comp["mask"].sum()) == 1:
+            r, c = (int(v[0]) for v in np.nonzero(comp["mask"]))
+            out.append((r, c, int(a[r, c])))
+    return out
+
+
+def _render_stamps(a: np.ndarray, stamps: dict, geom, keep: bool) -> np.ndarray | None:
+    sh, sw, oy, ox = geom
+    bg = _bg(a)
+    h, w = a.shape
+    seeds = _seeds(a)
+    out = a.copy() if keep else np.full_like(a, bg)
+    for r, c, col in seeds:
+        out[r, c] = bg
+    for r, c, col in seeds:
+        if col not in stamps:
+            return None
+        pat = stamps[col]
+        for y in range(sh):
+            for x in range(sw):
+                rr, cc = r + oy + y, c + ox + x
+                if pat[y][x] == -1:
+                    continue
+                if not (0 <= rr < h and 0 <= cc < w):
+                    return None
+                out[rr, cc] = pat[y][x]
+    return out
+
+
+def stamp(train, test_inputs):
+    """Each isolated pixel becomes a pattern learned per colour (other content kept or cleared)."""
+    pairs = [(_arr(p["input"]), _arr(p["output"])) for p in train]
+    if any(a.shape != o.shape for a, o in pairs):
+        return None
+    if not all(_seeds(a) for a, _ in pairs):
+        return None
+    answers: list[list[Grid]] = []
+    for sh in range(1, 6):
+        for sw in range(1, 6):
+            if sh * sw == 1:
+                continue
+            for oy in range(-(sh - 1), 1):
+                for ox in range(-(sw - 1), 1):
+                    stamps: dict = {}
+                    good = True
+                    for a, o in pairs:
+                        h, w = a.shape
+                        for r, c, col in _seeds(a):
+                            r0, c0 = r + oy, c + ox
+                            if r0 < 0 or c0 < 0 or r0 + sh > h or c0 + sw > w:
+                                good = False
+                                break
+                            pat = o[r0:r0 + sh, c0:c0 + sw].tolist()
+                            if stamps.setdefault(col, pat) != pat:
+                                good = False
+                                break
+                        if not good:
+                            break
+                    if not good:
+                        continue
+                    for keep in (False, True):
+                        geom = (sh, sw, oy, ox)
+                        if all((r := _render_stamps(a, stamps, geom, keep)) is not None
+                               and np.array_equal(r, o) for a, o in pairs):
+                            out = []
+                            for g in test_inputs:
+                                r = _render_stamps(_arr(g), stamps, geom, keep)
+                                out.append(None if r is None else r.tolist())
+                            answers.append(out)
+    return _consensus(answers)
+
+
 FAMILIES = [
     ("family:symmetry", symmetry),
     ("family:periodic", periodic),
@@ -1004,4 +1084,5 @@ FAMILIES = [
     ("family:align", align_to_marker),
     ("family:symmetrize", symmetrize),
     ("family:edge_snap", edge_snap),
+    ("family:stamp", stamp),
 ]

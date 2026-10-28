@@ -257,3 +257,29 @@ def test_edge_snap_family_moves_objects_by_colour():
     test = make(10, 10, [(5, 3, 0, 2, 2), (3, 4, 3, 1, 3), (5, 2, 7, 1, 3)])
     assert verify(edge_snap, train)
     assert edge_snap(train, [test["input"]]) == [test["output"]]
+
+
+def test_stamp_family_places_learned_pattern_per_colour():
+    from src.addon.families import stamp
+
+    ring = [[4, 4, 4], [4, 0, 4], [4, 4, 4]]
+    plus = [[0, 1, 0], [1, 1, 1], [0, 1, 0]]
+
+    def make(h, w, seeds):
+        """seed (r, c, colour) at a stamp's centre; colour 2 -> ring of 4, colour 3 -> plus of 1."""
+        g = [[0] * w for _ in range(h)]
+        out = [[0] * w for _ in range(h)]
+        for r, c, col in seeds:
+            g[r][c] = col
+            pat = ring if col == 2 else plus
+            for y in range(3):
+                for x in range(3):
+                    if pat[y][x]:
+                        out[r - 1 + y][c - 1 + x] = pat[y][x]
+        return {"input": g, "output": out}
+
+    train = [make(8, 8, [(1, 1, 2), (5, 5, 3)]), make(9, 9, [(2, 6, 3), (6, 2, 2)]),
+             make(10, 8, [(1, 5, 2), (5, 1, 3), (8, 5, 2)])]
+    test = make(10, 10, [(1, 1, 3), (4, 6, 2), (8, 2, 3)])
+    assert verify(stamp, train)
+    assert stamp(train, [test["input"]]) == [test["output"]]

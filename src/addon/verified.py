@@ -117,6 +117,36 @@ def registry_sources() -> list[tuple[str, Source]]:
     return out
 
 
+def _dihedral():
+    """The 7 non-identity rotations/flips as (name, forward, inverse) on numpy grids."""
+    return [
+        ("rot90", lambda g: np.rot90(g, 1), lambda g: np.rot90(g, -1)),
+        ("rot180", lambda g: np.rot90(g, 2), lambda g: np.rot90(g, 2)),
+        ("rot270", lambda g: np.rot90(g, 3), lambda g: np.rot90(g, -3)),
+        ("flipud", np.flipud, np.flipud),
+        ("fliplr", np.fliplr, np.fliplr),
+        ("transpose", lambda g: g.T, lambda g: g.T),
+        ("antitranspose", lambda g: np.rot90(g, 2).T, lambda g: np.rot90(g.T, 2)),
+    ]
+
+
+def oriented(name: str, src: Source) -> list[tuple[str, Source]]:
+    """The same source applied to rotated/flipped copies of the task, answers turned back.
+    Lets a rule written for one orientation cover the other seven."""
+    out: list[tuple[str, Source]] = []
+    for tname, fwd, inv in _dihedral():
+        def wrapped(train, test_inputs, _f=fwd, _i=inv, _s=src):
+            t_train = [{"input": _f(np.asarray(p["input"])).tolist(),
+                        "output": _f(np.asarray(p["output"])).tolist()} for p in train]
+            t_tests = [_f(np.asarray(g)).tolist() for g in test_inputs]
+            preds = _s(t_train, t_tests)
+            if not preds:
+                return None
+            return [None if p is None else _i(np.asarray(p)).tolist() for p in preds]
+        out.append((f"{name}@{tname}", wrapped))
+    return out
+
+
 # ── source 2: verified geometry (third party) ─────────────────────────────────
 
 def geometry_source() -> list[tuple[str, Source]]:
@@ -223,7 +253,15 @@ def family_sources() -> list[tuple[str, Source]]:
     return list(FAMILIES)
 
 
+def registry_oriented_sources() -> list[tuple[str, Source]]:
+    out: list[tuple[str, Source]] = []
+    for name, src in registry_sources():
+        out += oriented(name, src)
+    return out
+
+
 DEFAULT_SOURCES = ("registry", "geometry", "search", "families")
+# Optional (not default until its precision is confirmed): "registry_oriented"
 
 
 def all_sources(include: tuple[str, ...] = DEFAULT_SOURCES):
@@ -236,6 +274,8 @@ def all_sources(include: tuple[str, ...] = DEFAULT_SOURCES):
         sources += search_source()
     if "families" in include:
         sources += family_sources()
+    if "registry_oriented" in include:
+        sources += registry_oriented_sources()
     return sources
 
 
