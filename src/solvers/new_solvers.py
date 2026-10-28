@@ -19,8 +19,7 @@ Patterns covered:
 from __future__ import annotations
 
 import math
-from collections import Counter, defaultdict
-from typing import Optional
+from collections import Counter
 
 from ..core.grid_codec import (
     Grid,
@@ -115,7 +114,7 @@ class DiagonalShearLeftSolver(BaseSolver):
     def priority(self) -> int:
         return 30
 
-    def _shear_transform(self, grid: Grid) -> Optional[Grid]:
+    def _shear_transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
         obj_cells = [(r, c) for r in range(h) for c in range(w) if grid[r][c] != bg]
@@ -197,7 +196,7 @@ class ExpandFrameSwapSolver(BaseSolver):
                     result.append((min_r, min_c, max_r, max_c, color, int_color))
         return result
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
         frames = self._get_all_frames_info(grid, bg)
@@ -268,7 +267,7 @@ class FillRightToBarSolver(BaseSolver):
     def priority(self) -> int:
         return 32
 
-    def _infer_wall_col(self, grid: Grid, bg: int) -> Optional[int]:
+    def _infer_wall_col(self, grid: Grid, bg: int) -> int | None:
         h, w = grid_dims(grid)
         for c in range(w - 1, -1, -1):
             col_colors = [grid[r][c] for r in range(h) if grid[r][c] != bg]
@@ -392,7 +391,7 @@ class NoisyGridRepairSolver(BaseSolver):
                 out[r][c] = tile[r % tile_h][c % tile_w]
         return out
 
-    def _repair_full(self, grid: Grid) -> Optional[Grid]:
+    def _repair_full(self, grid: Grid) -> Grid | None:
         """Repair active region only; dead zone stays zeros."""
         h, w = grid_dims(grid)
         r1, c1, r2, c2 = self._get_active_region(grid)
@@ -673,7 +672,7 @@ class BlockRecolorByPositionSolver(BaseSolver):
                     out[r][c] = tgt
         return out
 
-    def _infer_src_color(self, inp: Grid, out: Grid, bg: int) -> Optional[int]:
+    def _infer_src_color(self, inp: Grid, out: Grid, bg: int) -> int | None:
         candidates = set(v for row in inp for v in row if v != bg)
         for color in candidates:
             rects = self._find_solid_rects(inp, color)
@@ -763,7 +762,7 @@ class DirectionalTrailSolver(BaseSolver):
                     return r, c, non_two[0]
         return None, None, None
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
         box_r, box_c, dominant = self._find_box(grid, bg)
@@ -841,7 +840,7 @@ class TrianglePyramidSolver(BaseSolver):
     def priority(self) -> int:
         return 43
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
         out = [[bg] * w for _ in range(h)]
@@ -921,7 +920,7 @@ class CornerScatterSolver(BaseSolver):
     def priority(self) -> int:
         return 44
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
 
@@ -1013,7 +1012,7 @@ class FillDownFromWallSolver(BaseSolver):
                     markers.append((min(rows_list), min(cols_list), max(cols_list), color))
         return markers
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
         bg = background_color(grid)
         wall_row, wall_color = self._find_wall_row(grid, bg)
@@ -1077,7 +1076,7 @@ class LineIndicatorBlobRecolorSolver(BaseSolver):
 
     def _find_lines(self, grid: Grid):
         """Return (line_rows_set, line_cols_set) from paired border 1-cells.
-        
+
         Horizontal line at row R: requires 1 at (R, 0) AND (R, W-1) — left+right border.
         Vertical line at col C: requires 1 at (0, C) AND (H-1, C) — top+bottom border.
         This prevents corner/same-side pairs from creating spurious lines.
@@ -1103,9 +1102,9 @@ class LineIndicatorBlobRecolorSolver(BaseSolver):
                 return True
         return False
 
-    def _transform(self, grid: Grid) -> Optional[Grid]:
+    def _transform(self, grid: Grid) -> Grid | None:
         h, w = grid_dims(grid)
-        bg = background_color(grid)
+        background_color(grid)
         line_rows, line_cols = self._find_lines(grid)
         if not line_rows and not line_cols:
             return None

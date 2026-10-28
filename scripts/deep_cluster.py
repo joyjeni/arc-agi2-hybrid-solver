@@ -2,7 +2,9 @@
 Deep sub-clustering of the RECOLOR_SAME_SIZE and RECOLOR_DIFF_COLORS buckets.
 Identifies concrete sub-patterns for specialized solver construction.
 """
-import json, sys, collections, itertools
+import collections
+import json
+import sys
 from pathlib import Path
 
 ROOT = Path("/home/sandbox/arc-jeni-2026")

@@ -9,12 +9,12 @@ Patterns implemented:
 """
 from __future__ import annotations
 
-import numpy as np
 from collections import Counter
-from itertools import product
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+import numpy as np
+
 from ..core.grid_codec import background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
 
@@ -310,7 +310,7 @@ class ColSeparatorAndMark2Solver(BaseSolver):
         if result is None:
             raise ValueError("No separator column found")
         sep_col, sep_color = result
-        bg = background_color(inp.tolist())
+        background_color(inp.tolist())
 
         left = inp[:, :sep_col]
         right = inp[:, sep_col + 1:]

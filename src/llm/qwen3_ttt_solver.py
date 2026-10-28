@@ -41,7 +41,6 @@ continues with Stage 2 and Stage 1 as usual.
 
 from __future__ import annotations
 
-import copy
 import json
 import logging
 import os
@@ -52,8 +51,8 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:  # avoid heavy imports at module load time
     pass
 
+from ..core.grid_codec import text_to_grid
 from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
-from ..core.grid_codec import grid_to_text, text_to_grid
 
 logger = logging.getLogger(__name__)
 
@@ -173,7 +172,7 @@ def _str_to_grid(text: str):
         return g
 
     # Try plain newline / space separated rows
-    lines = [l.strip() for l in text.strip().splitlines() if l.strip()]
+    lines = [ln.strip() for ln in text.strip().splitlines() if ln.strip()]
     rows = []
     for line in lines:
         tokens = re.findall(r"\d+", line)
@@ -316,7 +315,7 @@ def _run_ttt(model, tokenizer, aug_pairs, device):
 
     for step in range(TTT_STEPS):
         pair = aug_pairs[step % len(aug_pairs)]
-        prompt = _build_prompt([pair], [0])  # dummy test; we only need loss
+        _build_prompt([pair], [0])  # dummy test; we only need loss
         # Format as "input → output" training example
         full_text = (
             _build_prompt([], pair["input"]).split("Test Input:\n", 1)[-1].strip()

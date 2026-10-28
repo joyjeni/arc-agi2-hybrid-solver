@@ -21,16 +21,13 @@ Patterns covered
 from __future__ import annotations
 
 import collections
-from typing import Optional
 
 from ..core.grid_codec import (
     Grid,
     background_color,
-    color_histogram,
     copy_grid,
     flip_h,
     flip_v,
-    grid_dims,
     rotate90,
 )
 from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
@@ -443,7 +440,7 @@ class UniqueHoleObjectSolver(BaseSolver):
         """True if drawing only this object's cells creates an enclosed interior."""
         rows, cols = _dims(grid)
         bg = _bg(grid)
-        comp_set = set(comp)
+        set(comp)
         # Build a grid with only this object
         temp = [[bg] * cols for _ in range(rows)]
         color = grid[comp[0][0]][comp[0][1]]
@@ -1163,7 +1160,6 @@ class ColGroupPatternColorSolver(BaseSolver):
         if rows_in != rows_out or cols_in != cols_out:
             return None, None
 
-        best_w = None
         for w in range(1, cols_in // 2 + 1):
             if cols_in % w != 0:
                 continue
@@ -1192,7 +1188,6 @@ class ColGroupPatternColorSolver(BaseSolver):
                 if not valid:
                     break
             if valid and pattern_map:
-                best_w = w
                 return pattern_map, w
         return None, None
 
@@ -1643,7 +1638,7 @@ class FillRectInteriorSolver(BaseSolver):
     def _fill_interior(grid: Grid, bg: int, frame_color: int,
                        top: int, left: int, bottom: int, right: int,
                        fill_cells, fill_color: int) -> Grid | None:
-        rows, cols = len(grid), len(grid[0])
+        _rows, _cols = len(grid), len(grid[0])
         out = [row[:] for row in grid]
         # Erase fill material
         for r, c in fill_cells:
@@ -1892,7 +1887,6 @@ class WallToTargetLineSolver(BaseSolver):
     @staticmethod
     def _apply(grid: Grid, bg: int) -> Grid | None:
         rows, cols = len(grid), len(grid[0])
-        wc = WallToTargetLineSolver.WALL_COLOR
         dc = WallToTargetLineSolver.DOT_COLOR
         mc = WallToTargetLineSolver.MARK_COLOR
         groups = WallToTargetLineSolver._find_wall_col_groups(grid)
@@ -2002,7 +1996,7 @@ def _identify_transform(inp: Grid, target: Grid) -> str | None:
 
 def _build_grid_from_arrangement(inp: Grid, arrangement: list) -> Grid:
     """Build output grid by tiling inp according to arrangement (list of lists of transform names)."""
-    H, W = len(inp), len(inp[0])
+    H, _W = len(inp), len(inp[0])
     transforms = _all_transforms(inp)
     rows_out = len(arrangement)
     cols_out = len(arrangement[0])
@@ -2029,7 +2023,7 @@ def _learn_tile_arrangement(pairs: list, rows: int, cols: int) -> list | None:
 
     def _all_matching_names(inp, tile):
         """All transform names whose result matches tile."""
-        H, W = len(inp), len(inp[0])
+        _H, _W = len(inp), len(inp[0])
         matches = []
         candidates = _all_transforms(inp)
         for name in _ALL_NAMES:
@@ -2210,7 +2204,7 @@ class RowAltFlipTileSolver(BaseSolver):
     def _apply(inp: Grid, tcols: int, even_is_orig: bool) -> Grid:
         fh = flip_h(inp)
         out = []
-        H, W = len(inp), len(inp[0])
+        H, _W = len(inp), len(inp[0])
         for tr in range(3):
             tile = inp if (tr % 2 == 0) == even_is_orig else fh
             for r in range(H):
@@ -2375,7 +2369,7 @@ class ModeInSection5Solver(BaseSolver):
 
     @staticmethod
     def _find_five_row(grid: Grid) -> int | None:
-        W = len(grid[0]) if grid else 0
+        len(grid[0]) if grid else 0
         for r, row in enumerate(grid):
             if all(cell == 5 for cell in row):
                 return r
@@ -2792,7 +2786,7 @@ class UniformRowClassifierSolver(BaseSolver):
         W_out = None
         for pair in ctx.train_pairs:
             inp, out = pair["input"], pair["output"]
-            H, W = len(inp), len(inp[0])
+            H, _W = len(inp), len(inp[0])
             if len(out) != H:
                 return None
             W_out_pair = len(out[0])
@@ -2884,7 +2878,7 @@ class DiagonalFillSolver(BaseSolver):
         for pair in ctx.train_pairs:
             inp, out = pair["input"], pair["output"]
             H, W = len(out), len(out[0])
-            H_in, W_in = len(inp), len(inp[0])
+            H_in, _W_in = len(inp), len(inp[0])
             # Only apply to square output grids
             if H != W or H < 2 or W < 2:
                 return None
@@ -3703,7 +3697,6 @@ class NonZeroProjectDiagSolver(BaseSolver):
 
         # build 2H×2W output
         out = [[0]*(2*W) for _ in range(2*H)]
-        IDENTITY = [[1, 0], [0, 1]]
         for r in range(H):
             for c in range(W):
                 br, bc = 2*r, 2*c
@@ -3766,7 +3759,6 @@ class InvBlockOnZeroSolver(BaseSolver):
         if not pairs:
             return None
         # validate all pairs: output must be 3H×3W; input must be 2-color (0 + fg)
-        fg_global = None
         for pair in pairs:
             inp, exp = pair["input"], pair["output"]
             H, W = _dims(inp)
@@ -4081,7 +4073,6 @@ class VertDividerOpSolver(BaseSolver):
             return None
 
         # Find consistent divider across all pairs
-        common_div = None  # (col_idx, div_value) — track by value only across pairs
         learned_dv = None  # divider value consistent across pairs
 
         # First pass: find divider candidates per pair, intersect by value
@@ -6003,7 +5994,7 @@ class VerticalRunRankSolver(BaseSolver):
         if not all_runs:
             return None
         unique_lengths = sorted(set(x[0] for x in all_runs), reverse=True)
-        len_to_rank = {l: i + 1 for i, l in enumerate(unique_lengths)}
+        len_to_rank = {n: i + 1 for i, n in enumerate(unique_lengths)}
         out = [[0] * W for _ in range(H)]
         for (length, c, start, end) in all_runs:
             rank = len_to_rank[length]
@@ -7335,14 +7326,14 @@ class FiveAnchorPlacementSolver(BaseSolver):
 
 
 @register_solver
-class CrossExpandSolver(BaseSolver):
+class CrossExpand5x5Solver(BaseSolver):
     """p128 — task 0962bcdd
     Find each cross: center C, 4 cardinal neighbors all = A (A != C).
     Expand to a 5x5 block at that position:
       origin(0,0)=C; axis cells (dr=0 or dc=0, not origin)=A;
       diagonal cells (|dr|=|dc|!=0)=C; else 0.
     """
-    name = "CrossExpandSolver"
+    name = "CrossExpand5x5Solver"
 
     @property
     def priority(self) -> int:
@@ -7560,7 +7551,7 @@ class FiveCountRepeatSolver(BaseSolver):
     priority = 131
 
     def _apply(self, grid):
-        H = len(grid); W = len(grid[0])
+        H = len(grid); len(grid[0])
         N = 0
         for r in range(H):
             if grid[r][0] == 5:

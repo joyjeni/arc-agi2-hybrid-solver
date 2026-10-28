@@ -10,19 +10,16 @@ Solvers:
 """
 
 from collections import Counter, deque
-from typing import List, Optional, Tuple
 
-from src.core.interfaces import (
-    BaseSolver, TaskContext, SolverResult, Prediction, Grid
-)
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
-
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_result(ctx: TaskContext, preds: List[Grid]) -> SolverResult:
+def _make_result(ctx: TaskContext, preds: list[Grid]) -> SolverResult:
     predictions = [
         Prediction(attempt_1=p, attempt_2=p, solver_name=ctx.task_id)
         for p in preds
@@ -83,7 +80,7 @@ class ConcentricNestSolver(BaseSolver):
     def name(self) -> str:
         return "ConcentricNestSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -93,7 +90,7 @@ class ConcentricNestSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         bg = _most_common_color(grid)
         H = len(grid); W = len(grid[0]) if H else 0
         visited = [[False] * W for _ in range(H)]
@@ -175,7 +172,7 @@ class Tile3xDiagonalSolver(BaseSolver):
                     result[nr + ti * H][nc + tj * W] = new_color
         return result
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for dr, dc in self.OFFSETS:
@@ -221,7 +218,7 @@ class FillFrameInteriorSolver(BaseSolver):
     def name(self) -> str:
         return "FillFrameInteriorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -314,7 +311,7 @@ class FillFrameInteriorSolver(BaseSolver):
 
     # ---- main predict ------------------------------------------------------
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H = len(grid); W = len(grid[0]) if H else 0
         ext = self._exterior_mask(grid)
 
@@ -388,7 +385,7 @@ class StampRepeatSolver(BaseSolver):
     def name(self) -> str:
         return "StampRepeatSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -398,7 +395,7 @@ class StampRepeatSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H = len(grid); W = len(grid[0]) if H else 0
         comps = _bfs_components(grid)
         if not comps:
@@ -421,7 +418,7 @@ class StampRepeatSolver(BaseSolver):
             return None  # ambiguous marker color
 
         n_markers = len(marker_comps)
-        marker_color = next(iter(marker_colors))
+        next(iter(marker_colors))
         marker_cells_set = set(cells[0] for _, cells in marker_comps)
 
         # Template = ALL cells of template_color (multi + any isolated single pixels)
@@ -463,6 +460,6 @@ class StampRepeatSolver(BaseSolver):
         if n_markers == 0:
             return None
         th_t = len(tmpl)
-        tw_t = len(tmpl[0]) if th_t else 0
+        len(tmpl[0]) if th_t else 0
         out = [tmpl[r][:] * n_markers for r in range(th_t)]
         return out

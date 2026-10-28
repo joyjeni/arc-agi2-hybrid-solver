@@ -11,12 +11,10 @@ Solvers:
 from __future__ import annotations
 
 from collections import Counter, deque
-from typing import Optional
 
 from ..core.grid_codec import Grid, background_color
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
-
 
 # ── Shared helpers ─────────────────────────────────────────────────────────────
 
@@ -94,7 +92,7 @@ class TileRepeatByInputSizeSolver(BaseSolver):
                 out.append(row)
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for p in ctx.train_pairs:
@@ -171,7 +169,7 @@ class OddQuadrantOutSolver(BaseSolver):
                 blocks.append(blk)
         return blocks
 
-    def _find_odd(self, blocks: list) -> Optional[list]:
+    def _find_odd(self, blocks: list) -> list | None:
         """Among 4 equal-sized blocks, return the one that differs from the other 3."""
         if len(blocks) != 4:
             return None
@@ -190,7 +188,7 @@ class OddQuadrantOutSolver(BaseSolver):
         idx = keys.index(odd_key)
         return blocks[idx]
 
-    def _apply(self, grid: Grid) -> Optional[list]:
+    def _apply(self, grid: Grid) -> list | None:
         bg = _bg(grid)
         div_rows = self._divider_rows(grid, bg)
         div_cols = self._divider_cols(grid, bg)
@@ -205,7 +203,7 @@ class OddQuadrantOutSolver(BaseSolver):
             return None
         return self._find_odd(blocks)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for p in ctx.train_pairs:
@@ -274,7 +272,7 @@ class SinglePixelColorIndicatorSolver(BaseSolver):
         out[pr][pc] = bg
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for p in ctx.train_pairs:
@@ -321,14 +319,14 @@ class SingleColorFixedRecolorSolver(BaseSolver):
     def priority(self) -> int:
         return 69
 
-    def _one_nonbg_color(self, grid: Grid, bg: int) -> Optional[int]:
+    def _one_nonbg_color(self, grid: Grid, bg: int) -> int | None:
         """Return the single non-bg color in grid, or None if not exactly one."""
         colors = {grid[r][c] for r in range(len(grid)) for c in range(len(grid[0])) if grid[r][c] != bg}
         if len(colors) == 1:
             return next(iter(colors))
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 
@@ -402,7 +400,7 @@ class CropMainObjectSolver(BaseSolver):
     def priority(self) -> int:
         return 70
 
-    def _largest_cc_bbox_crop(self, grid: Grid) -> Optional[Grid]:
+    def _largest_cc_bbox_crop(self, grid: Grid) -> Grid | None:
         bg = _bg(grid)
         ccs = _all_ccs(grid, bg)
         if not ccs:
@@ -415,7 +413,7 @@ class CropMainObjectSolver(BaseSolver):
         c0, c1 = min(cols), max(cols)
         return [grid[r][c0:c1 + 1] for r in range(r0, r1 + 1)]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for p in ctx.train_pairs:

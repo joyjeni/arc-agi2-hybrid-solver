@@ -7,10 +7,10 @@ advanced_solvers20.py — 5 pattern solvers
   5. PatternRowProjectionSolver  (task 2685904e)
 """
 
-from typing import List, Tuple, Dict, Optional, Set
 from collections import Counter, defaultdict
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -50,13 +50,13 @@ def _verify_exact(out: Grid, expected: Grid) -> bool:
 #     pick direction with minimum steps; fill from cell to boundary (exclusive of start).
 #   Return None if any color appears 3+ times.
 
-def _solve_diagonal_pair_connect(grid: Grid) -> Optional[Grid]:
+def _solve_diagonal_pair_connect(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     bg = _bg_color(grid)
 
     # Collect non-bg cells by color
-    color_cells: Dict[int, List[Tuple[int, int]]] = defaultdict(list)
+    color_cells: dict[int, list[tuple[int, int]]] = defaultdict(list)
     for r in range(H):
         for c in range(W):
             if grid[r][c] != bg:
@@ -110,7 +110,7 @@ class DiagonalPairConnectSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalPairConnectSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             result = _solve_diagonal_pair_connect(pair["input"])
             if result is None or not _verify_exact(result, pair["output"]):
@@ -138,7 +138,7 @@ class DiagonalPairConnectSolver(BaseSolver):
 #   Midpoint M = ((r1+r2)//2, (c1+c2)//2) → paint with color 5.
 #   For each of the 3 source cells: paint M + (sign(r-Mr), sign(c-Mc)) with that cell's color.
 
-def _solve_triangle_midpoint(grid: Grid) -> Optional[Grid]:
+def _solve_triangle_midpoint(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     bg = 0
@@ -198,7 +198,7 @@ class TriangleMidpointSolver(BaseSolver):
     def name(self) -> str:
         return "TriangleMidpointSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             result = _solve_triangle_midpoint(pair["input"])
             if result is None or not _verify_exact(result, pair["output"]):
@@ -227,20 +227,20 @@ class TriangleMidpointSolver(BaseSolver):
 #     (|r−divrow| for row dividers, |c−divcol| for col dividers); recolor with that divider's color.
 #   Return None if no dividers found.
 
-def _solve_closest_divider_recolor(grid: Grid) -> Optional[Grid]:
+def _solve_closest_divider_recolor(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     bg = 0
 
     # Find full-row dividers
-    row_dividers: Dict[int, int] = {}
+    row_dividers: dict[int, int] = {}
     for r in range(H):
         non_bg = [grid[r][c] for c in range(W) if grid[r][c] != bg]
         if len(non_bg) == W and len(set(non_bg)) == 1:
             row_dividers[r] = non_bg[0]
 
     # Find full-col dividers
-    col_dividers: Dict[int, int] = {}
+    col_dividers: dict[int, int] = {}
     for c in range(W):
         non_bg = [grid[r][c] for r in range(H) if grid[r][c] != bg]
         if len(non_bg) == H and len(set(non_bg)) == 1:
@@ -285,7 +285,7 @@ class ClosestDividerRecolorSolver(BaseSolver):
     def name(self) -> str:
         return "ClosestDividerRecolorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 result = _solve_closest_divider_recolor(pair["input"])
@@ -323,16 +323,16 @@ class ClosestDividerRecolorSolver(BaseSolver):
 #     - Gap on right border (c==c2):  extend rightward
 #   If gap is already at grid edge, no extension (loop is empty).
 
-def _bfs_components(grid: Grid, color: int) -> List[Set[Tuple[int, int]]]:
+def _bfs_components(grid: Grid, color: int) -> list[set[tuple[int, int]]]:
     H = len(grid)
     W = len(grid[0])
-    visited: Set[Tuple[int, int]] = set()
+    visited: set[tuple[int, int]] = set()
     components = []
 
     for r in range(H):
         for c in range(W):
             if grid[r][c] == color and (r, c) not in visited:
-                comp: Set[Tuple[int, int]] = set()
+                comp: set[tuple[int, int]] = set()
                 queue = [(r, c)]
                 visited.add((r, c))
                 comp.add((r, c))
@@ -348,7 +348,7 @@ def _bfs_components(grid: Grid, color: int) -> List[Set[Tuple[int, int]]]:
     return components
 
 
-def _solve_rectangle_gap_fill(grid: Grid) -> Optional[Grid]:
+def _solve_rectangle_gap_fill(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     FRAME = 1
@@ -376,7 +376,7 @@ def _solve_rectangle_gap_fill(grid: Grid) -> Optional[Grid]:
                 return None  # interior frame cell — wrong task
 
         # Build expected full border
-        expected_border: Set[Tuple[int, int]] = set()
+        expected_border: set[tuple[int, int]] = set()
         for cc in range(c1, c2 + 1):
             expected_border.add((r1, cc))
             expected_border.add((r2, cc))
@@ -427,7 +427,7 @@ class RectangleGapFillSolver(BaseSolver):
     def name(self) -> str:
         return "RectangleGapFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 result = _solve_rectangle_gap_fill(pair["input"])
@@ -460,7 +460,7 @@ class RectangleGapFillSolver(BaseSolver):
 #   For i in 1..N: at row (divider_row − i), for each column where a target color
 #     appears in the pattern row, paint that cell with the target color.
 
-def _solve_pattern_row_projection(grid: Grid) -> Optional[Grid]:
+def _solve_pattern_row_projection(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     IGNORED = {0, 5, 8}
@@ -530,7 +530,7 @@ class PatternRowProjectionSolver(BaseSolver):
     def name(self) -> str:
         return "PatternRowProjectionSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             result = _solve_pattern_row_projection(pair["input"])
             if result is None or not _verify_exact(result, pair["output"]):

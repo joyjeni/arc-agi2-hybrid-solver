@@ -1,11 +1,14 @@
 """advanced_solvers7.py — Block downsample and related shrink solvers."""
 from __future__ import annotations
 
-import numpy as np
 from collections import Counter
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+
+import numpy as np
+
 from ..core.grid_codec import background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
+
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 def _sh(g):  return (len(g), len(g[0])) if g else (0, 0)

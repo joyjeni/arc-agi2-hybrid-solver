@@ -7,9 +7,8 @@ advanced_solvers29.py — Four solvers for ARC-AGI-2
 4. SpineExtrusionSolver           (task: 9c1e755f) — partial 5-ruler extrudes adjacent colors
 """
 
-from typing import List, Optional, Tuple
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -48,7 +47,7 @@ class CrossMoveAwayFromFiveSolver(BaseSolver):
     def name(self) -> str:
         return "CrossMoveAwayFromFiveSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         # Find cross row: a row where ALL cells are the same non-zero non-5 color
@@ -101,7 +100,7 @@ class CrossMoveAwayFromFiveSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -144,7 +143,7 @@ class DiagonalRaysFromBlockCornersSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalRaysFromBlockCornersSolver"
 
-    def _find_2x2(self, inp: Grid, color: int) -> Optional[Tuple[int, int]]:
+    def _find_2x2(self, inp: Grid, color: int) -> tuple[int, int] | None:
         rows, cols = len(inp), len(inp[0])
         for r in range(rows - 1):
             for c in range(cols - 1):
@@ -153,7 +152,7 @@ class DiagonalRaysFromBlockCornersSolver(BaseSolver):
                     return (r, c)
         return None
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         block1 = self._find_2x2(inp, 1)
@@ -182,7 +181,7 @@ class DiagonalRaysFromBlockCornersSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -227,11 +226,11 @@ class FiveGravityToBlockSolver(BaseSolver):
     def name(self) -> str:
         return "FiveGravityToBlockSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         # Find 2x2 solid-color block (non-zero, non-5)
-        block_cells: List[Tuple[int, int]] = []
+        block_cells: list[tuple[int, int]] = []
         for r in range(rows - 1):
             for c in range(cols - 1):
                 v = inp[r][c]
@@ -294,7 +293,7 @@ class FiveGravityToBlockSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -351,7 +350,7 @@ class SpineExtrusionSolver(BaseSolver):
     def name(self) -> str:
         return "SpineExtrusionSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
         out = [[0] * cols for _ in range(rows)]
         applied_any = False
@@ -455,7 +454,7 @@ class SpineExtrusionSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None

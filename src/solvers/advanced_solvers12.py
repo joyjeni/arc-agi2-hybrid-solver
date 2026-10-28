@@ -7,10 +7,10 @@ advanced_solvers12.py — 5 new solvers derived from deep pattern analysis
   5. LPathConnectSolver      (task 2dd70a9a)
 """
 from collections import deque
-from typing import List, Optional
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
-from .registry import register_solver
 
+from src.core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
+
+from .registry import register_solver
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -85,7 +85,7 @@ class HSpanFillSolver(BaseSolver):
                         g[r][c] = color
         return g
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # validate on every training pair
         for p in ctx.train_pairs:
             inp = p['input']
@@ -194,7 +194,7 @@ class FillRectFrameSolver(BaseSolver):
             return None, None
         return min(border_candidates), min(fill_candidates)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         border_color, fill_color = self._learn_colors(ctx)
         if border_color is None:
             return None
@@ -263,7 +263,7 @@ class DiagonalExtensionSolver(BaseSolver):
                 c += dc
         return g
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for p in ctx.train_pairs:
             pred = self._apply(p['input'])
             if pred != p['output']:
@@ -367,7 +367,7 @@ class ReflectAroundPivotSolver(BaseSolver):
                     g[nr][nc] = tmpl_color
         return g
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         pivot_color, tmpl_color = self._identify_roles(ctx)
         if pivot_color is None:
             return None
@@ -474,7 +474,7 @@ class LPathConnectSolver(BaseSolver):
         tgt_cs = [c for r,c in tgt_cells]
 
         src_is_h = (len(set(src_rs)) == 1)
-        tgt_is_h = (len(set(tgt_rs)) == 1)
+        (len(set(tgt_rs)) == 1)
 
         # center-of-mass for direction preference
         src_r_ctr = sum(src_rs) / len(src_rs)
@@ -598,7 +598,7 @@ class LPathConnectSolver(BaseSolver):
                 g[r][c] = source_color
         return g
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         obstacle_color, source_color, target_color = self._learn_colors(ctx)
         if obstacle_color is None:
             return None

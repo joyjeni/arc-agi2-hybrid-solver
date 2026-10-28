@@ -2,14 +2,16 @@
 Pattern Audit — analyzes all 864 unsolved tasks, extracts structural features,
 clusters them into buckets, and reports the top patterns to target.
 """
-import json, sys, time, collections, math
+import collections
+import json
+import sys
 from pathlib import Path
 
 ROOT = Path("/home/sandbox/arc-jeni-2026")
 sys.path.insert(0, str(ROOT))
 
-from src.solvers import REGISTRY
 from src.core.interfaces import TaskContext
+from src.solvers import REGISTRY
 
 train_ch  = json.loads((ROOT / "data/arc-agi_training_challenges.json").read_text())
 train_sol = json.loads((ROOT / "data/arc-agi_training_solutions.json").read_text())
@@ -30,7 +32,7 @@ for task_id, task_data in train_ch.items():
     for solver in solvers:
         try:
             res = solver.solve(ctx)
-        except:
+        except Exception:
             continue
         if res and res.predictions:
             if res.predictions[0].attempt_1 == gts[0]:
@@ -231,4 +233,4 @@ for bname, tids in sorted(buckets.items(), key=lambda x: -len(x[1])):
 out = {"unsolved": unsolved_ids, "features": {k: {**v, "transform_tags": v["transform_tags"]} for k, v in features.items()}, "buckets": {k: v for k, v in buckets.items()}}
 with open('/tmp/pattern_audit.json', 'w') as f:
     json.dump(out, f)
-print(f"\nSaved audit to /tmp/pattern_audit.json")
+print("\nSaved audit to /tmp/pattern_audit.json")

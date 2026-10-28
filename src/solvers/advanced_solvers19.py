@@ -5,10 +5,10 @@ advanced_solvers19.py — 3 pattern solvers
   3. DiagonalRayFromInteriorSolver (task ec883f72)
 """
 
-from typing import List, Tuple, Dict, Optional
 from collections import Counter
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -48,20 +48,20 @@ def _verify_exact(out: Grid, expected: Grid) -> bool:
 #     - No matching divider: delete the stray (set to bg).
 #   When multiple dividers of the same color exist, snap to the nearest one.
 
-def _solve_stray_divider(grid: Grid) -> Optional[Grid]:
+def _solve_stray_divider(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     bg = 0
 
     # Find full-row dividers
-    row_dividers: Dict[int, int] = {}  # row -> color
+    row_dividers: dict[int, int] = {}  # row -> color
     for r in range(H):
         non_bg = [grid[r][c] for c in range(W) if grid[r][c] != bg]
         if len(non_bg) == W and len(set(non_bg)) == 1:
             row_dividers[r] = non_bg[0]
 
     # Find full-col dividers
-    col_dividers: Dict[int, int] = {}  # col -> color
+    col_dividers: dict[int, int] = {}  # col -> color
     for c in range(W):
         non_bg = [grid[r][c] for r in range(H) if grid[r][c] != bg]
         if len(non_bg) == H and len(set(non_bg)) == 1:
@@ -88,7 +88,7 @@ def _solve_stray_divider(grid: Grid) -> Optional[Grid]:
                 continue
 
             # Find nearest matching row divider
-            best_dr: Optional[int] = None
+            best_dr: int | None = None
             best_dist = float('inf')
             for dr, dv in row_dividers.items():
                 if dv == v:
@@ -105,7 +105,7 @@ def _solve_stray_divider(grid: Grid) -> Optional[Grid]:
                 continue
 
             # Find nearest matching col divider
-            best_dc: Optional[int] = None
+            best_dc: int | None = None
             best_dist = float('inf')
             for dc, dv in col_dividers.items():
                 if dv == v:
@@ -137,7 +137,7 @@ class StrayToAdjacentDividerSolver(BaseSolver):
     def name(self) -> str:
         return "StrayToAdjacentDividerSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_stray_divider(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):
@@ -165,7 +165,7 @@ class StrayToAdjacentDividerSolver(BaseSolver):
 #     If grid[r][c] == H-bar color → swap to V-bar color.
 #     If grid[r][c] == V-bar color → swap to H-bar color.
 
-def _solve_intersection_swap(grid: Grid) -> Optional[Grid]:
+def _solve_intersection_swap(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
 
@@ -178,7 +178,7 @@ def _solve_intersection_swap(grid: Grid) -> Optional[Grid]:
     THRESH = 0.40
 
     # H-bars
-    h_bars: List[Tuple[int, int]] = []  # (row, color)
+    h_bars: list[tuple[int, int]] = []  # (row, color)
     for r in range(H):
         row_vals = [grid[r][c] for c in range(W) if grid[r][c] != bg]
         if not row_vals:
@@ -188,7 +188,7 @@ def _solve_intersection_swap(grid: Grid) -> Optional[Grid]:
             h_bars.append((r, top[0]))
 
     # V-bars
-    v_bars: List[Tuple[int, int]] = []  # (col, color)
+    v_bars: list[tuple[int, int]] = []  # (col, color)
     for c in range(W):
         col_vals = [grid[r][c] for r in range(H) if grid[r][c] != bg]
         if not col_vals:
@@ -223,7 +223,7 @@ class IntersectionColorSwapSolver(BaseSolver):
     def name(self) -> str:
         return "IntersectionColorSwapSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_intersection_swap(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):
@@ -254,7 +254,7 @@ class IntersectionColorSwapSolver(BaseSolver):
 #     Cast a ray from the wall corner outward in the same diagonal direction,
 #     painting bg cells with the interior color until the ray exits the grid.
 
-def _solve_diagonal_ray(grid: Grid) -> Optional[Grid]:
+def _solve_diagonal_ray(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
 
@@ -269,8 +269,8 @@ def _solve_diagonal_ray(grid: Grid) -> Optional[Grid]:
         return None
 
     # Classify wall vs interior by fill ratio of bounding box
-    wall_color: Optional[int] = None
-    interior_color: Optional[int] = None
+    wall_color: int | None = None
+    interior_color: int | None = None
     for col in colors:
         rows_c = [r for r in range(H) for cc in range(W) if grid[r][cc] == col]
         cols_c = [cc for r in range(H) for cc in range(W) if grid[r][cc] == col]
@@ -353,7 +353,7 @@ class DiagonalRayFromInteriorSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalRayFromInteriorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_diagonal_ray(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):

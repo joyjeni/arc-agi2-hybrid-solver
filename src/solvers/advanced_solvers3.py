@@ -17,19 +17,17 @@ Targeting fill-bg-single-color (76 tasks), recolor, and bar-extend buckets:
 """
 
 from __future__ import annotations
-import copy
-from collections import Counter, deque
-from typing import Optional, List, Tuple, Set
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
-from ..core.grid_codec import background_color
+from collections import Counter, deque
+
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
-def _sh(g: Grid) -> Tuple[int, int]:
+def _sh(g: Grid) -> tuple[int, int]:
     return len(g), (len(g[0]) if g else 0)
 
 def _clone(g: Grid) -> Grid:
@@ -39,14 +37,14 @@ def _bg(g: Grid) -> int:
     flat = [v for r in g for v in r]
     return Counter(flat).most_common(1)[0][0] if flat else 0
 
-def _result(ctx: TaskContext, grids: List[Grid], name: str) -> SolverResult:
+def _result(ctx: TaskContext, grids: list[Grid], name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
 
-def _flood_exterior(g: Grid, bg: int) -> Set[Tuple[int, int]]:
+def _flood_exterior(g: Grid, bg: int) -> set[tuple[int, int]]:
     """BFS from all border-touching bg cells; returns the exterior bg set."""
     H, W = _sh(g)
-    vis: Set[Tuple[int, int]] = set()
+    vis: set[tuple[int, int]] = set()
     q: deque = deque()
     for r in range(H):
         for c in range(W):
@@ -60,7 +58,7 @@ def _flood_exterior(g: Grid, bg: int) -> Set[Tuple[int, int]]:
                 vis.add((nr, nc)); q.append((nr, nc))
     return vis
 
-def _learn_fill_color(inp: Grid, out: Grid, bg: int) -> Optional[int]:
+def _learn_fill_color(inp: Grid, out: Grid, bg: int) -> int | None:
     """
     Return fill_color if:
       - all changes are bg→fill_color (consistent single color)
@@ -68,7 +66,7 @@ def _learn_fill_color(inp: Grid, out: Grid, bg: int) -> Optional[int]:
     else return None.
     """
     if _sh(inp) != _sh(out): return None  # shape-change task → skip
-    colors: Set[int] = set()
+    colors: set[int] = set()
     for r in range(len(inp)):
         for c in range(len(inp[0])):
             iv, ov = inp[r][c], out[r][c]
@@ -80,7 +78,7 @@ def _learn_fill_color(inp: Grid, out: Grid, bg: int) -> Optional[int]:
         return None
     return list(colors)[0]
 
-def _all_fill_colors(pairs: list, bg: int) -> Optional[int]:
+def _all_fill_colors(pairs: list, bg: int) -> int | None:
     """Return fill color if consistent across all training pairs, else None."""
     fills = []
     for p in pairs:
@@ -119,7 +117,7 @@ class FillEnclosedRegionV2Solver(BaseSolver):
                     if iv != ov: return False        # non-bg unchanged
         return True
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -170,7 +168,7 @@ class FillBoundingBoxBgSolver(BaseSolver):
     def name(self) -> str:
         return "FillBoundingBoxBgSolver"
 
-    def _bbox(self, g: Grid, bg: int) -> Optional[Tuple[int, int, int, int]]:
+    def _bbox(self, g: Grid, bg: int) -> tuple[int, int, int, int] | None:
         H, W = _sh(g)
         rows = [r for r in range(H) for c in range(W) if g[r][c] != bg]
         cols = [c for r in range(H) for c in range(W) if g[r][c] != bg]
@@ -193,7 +191,7 @@ class FillBoundingBoxBgSolver(BaseSolver):
                     if iv != ov: return False
         return True
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -253,9 +251,9 @@ class FillBetweenSameColorRowSolver(BaseSolver):
                         positions[v] = [c, c]
                     else:
                         positions[v][1] = c
-            for v, (l, ri) in positions.items():
-                if l < ri:
-                    for c in range(l + 1, ri):
+            for v, (lo, ri) in positions.items():
+                if lo < ri:
+                    for c in range(lo + 1, ri):
                         if g[r][c] == bg:
                             out[r][c] = fill
         return out
@@ -264,7 +262,7 @@ class FillBetweenSameColorRowSolver(BaseSolver):
         expected = self._apply(inp, bg, fill)
         return expected == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -319,7 +317,7 @@ class FillBetweenSameColorColSolver(BaseSolver):
     def _verify_pair(self, inp: Grid, out: Grid, bg: int, fill: int) -> bool:
         return self._apply(inp, bg, fill) == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -349,15 +347,15 @@ class FillLargestBgComponentSolver(BaseSolver):
     def name(self) -> str:
         return "FillLargestBgComponentSolver"
 
-    def _largest_bg_comp(self, g: Grid, bg: int) -> List[Tuple[int, int]]:
+    def _largest_bg_comp(self, g: Grid, bg: int) -> list[tuple[int, int]]:
         H, W = _sh(g)
-        visited: Set[Tuple[int, int]] = set()
-        best: List[Tuple[int, int]] = []
+        visited: set[tuple[int, int]] = set()
+        best: list[tuple[int, int]] = []
         for r in range(H):
             for c in range(W):
                 if g[r][c] == bg and (r, c) not in visited:
                     # BFS
-                    comp: List[Tuple[int, int]] = []
+                    comp: list[tuple[int, int]] = []
                     q = deque([(r, c)]); visited.add((r, c))
                     while q:
                         cr, cc = q.popleft(); comp.append((cr, cc))
@@ -385,7 +383,7 @@ class FillLargestBgComponentSolver(BaseSolver):
                     if iv != ov: return False
         return True
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -426,7 +424,7 @@ class FillAllBgSolver(BaseSolver):
     def name(self) -> str:
         return "FillAllBgSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -464,7 +462,7 @@ class FillAllBgSolver(BaseSolver):
 @register_solver
 class SingleColorA2BSolver(BaseSolver):
     """
-    Learn a single non-bg A→B recolor: one color A changes to B, bg unchanged, 
+    Learn a single non-bg A→B recolor: one color A changes to B, bg unchanged,
     all other non-bg colors unchanged.
     """
 
@@ -472,7 +470,7 @@ class SingleColorA2BSolver(BaseSolver):
     def name(self) -> str:
         return "SingleColorA2BSolver"
 
-    def _infer_remap(self, inp: Grid, out: Grid, bg: int) -> Optional[Tuple[int, int]]:
+    def _infer_remap(self, inp: Grid, out: Grid, bg: int) -> tuple[int, int] | None:
         """Return (A, B) if exactly color A→B in this pair, else None."""
         changed: dict = {}
         for r in range(len(inp)):
@@ -493,7 +491,7 @@ class SingleColorA2BSolver(BaseSolver):
                     return None
         return (A, B)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -539,8 +537,8 @@ class RemoveSingleColorSolver(BaseSolver):
     def name(self) -> str:
         return "RemoveSingleColorSolver"
 
-    def _infer_remove(self, inp: Grid, out: Grid, bg: int) -> Optional[int]:
-        removed: Set[int] = set()
+    def _infer_remove(self, inp: Grid, out: Grid, bg: int) -> int | None:
+        removed: set[int] = set()
         for r in range(len(inp)):
             for c in range(len(inp[0])):
                 iv, ov = inp[r][c], out[r][c]
@@ -558,7 +556,7 @@ class RemoveSingleColorSolver(BaseSolver):
                     return None
         return X
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -620,7 +618,7 @@ class ExtendVerticalBarsSolver(BaseSolver):
     def _verify(self, inp: Grid, out: Grid, bg: int, fill: int) -> bool:
         return self._apply(inp, bg, fill) == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -653,9 +651,9 @@ class LearnedColumnFillSolver(BaseSolver):
     def name(self) -> str:
         return "LearnedColumnFillSolver"
 
-    def _changed_cols(self, inp: Grid, out: Grid, bg: int) -> Optional[Set[int]]:
+    def _changed_cols(self, inp: Grid, out: Grid, bg: int) -> set[int] | None:
         """Return set of column indices where at least one bg→fill change occurred."""
-        cols: Set[int] = set()
+        cols: set[int] = set()
         for r in range(len(inp)):
             for c in range(len(inp[0])):
                 iv, ov = inp[r][c], out[r][c]
@@ -665,7 +663,7 @@ class LearnedColumnFillSolver(BaseSolver):
                     return None  # non-bg changed
         return cols if cols else None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -735,8 +733,8 @@ class FillRowSpanBgSolver(BaseSolver):
         for r in range(H):
             non_bg = [c for c in range(W) if g[r][c] != bg]
             if len(non_bg) < 2: continue
-            l, ri = min(non_bg), max(non_bg)
-            for c in range(l + 1, ri):
+            lo, ri = min(non_bg), max(non_bg)
+            for c in range(lo + 1, ri):
                 if out[r][c] == bg:
                     out[r][c] = fill
         return out
@@ -744,7 +742,7 @@ class FillRowSpanBgSolver(BaseSolver):
     def _verify(self, inp: Grid, out: Grid, bg: int, fill: int) -> bool:
         return self._apply(inp, bg, fill) == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]
@@ -791,7 +789,7 @@ class FillColSpanBgSolver(BaseSolver):
     def _verify(self, inp: Grid, out: Grid, bg: int, fill: int) -> bool:
         return self._apply(inp, bg, fill) == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train: return None
         bg_vals = [_bg(p['input']) for p in train]

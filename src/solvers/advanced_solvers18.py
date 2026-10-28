@@ -4,9 +4,9 @@ advanced_solvers18.py — 2 pattern solvers
   2. PerimeterTilingSolver       (task 30f42897)
 """
 
-from typing import List, Tuple, Dict, Set, Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -16,7 +16,7 @@ from .registry import register_solver
 def _copy_grid(g: Grid) -> Grid:
     return [list(row) for row in g]
 
-def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
+def _make_result(grids: list[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
@@ -44,7 +44,7 @@ def _verify_exact(out: Grid, expected: Grid) -> bool:
 #     'main_diag' — all 1-cells satisfy r == c          (r,c) → (c, r)
 #     'anti_diag' — all 1-cells satisfy r+c == K        (r,c) → (K-c, K-r)
 
-def _detect_divider(grid: Grid) -> Tuple[str, int]:
+def _detect_divider(grid: Grid) -> tuple[str, int]:
     """Return (kind, param): kind in {'col','row','main_diag','anti_diag'}, param = d or K."""
     H, W = len(grid), len(grid[0])
     ones = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 1]
@@ -64,7 +64,7 @@ def _detect_divider(grid: Grid) -> Tuple[str, int]:
         return 'anti_diag', diag_anti[0]
     raise ValueError("Cannot classify divider")
 
-def _reflect_cell(r: int, c: int, kind: str, param: int) -> Tuple[int, int]:
+def _reflect_cell(r: int, c: int, kind: str, param: int) -> tuple[int, int]:
     if kind == 'col':
         return r, 2 * param - c
     if kind == 'row':
@@ -75,7 +75,7 @@ def _reflect_cell(r: int, c: int, kind: str, param: int) -> Tuple[int, int]:
     K = param
     return K - c, K - r
 
-def _solve_mirror(grid: Grid) -> Optional[Grid]:
+def _solve_mirror(grid: Grid) -> Grid | None:
     IGNORE = {0, 1, 8}
     H, W = len(grid), len(grid[0])
     try:
@@ -84,7 +84,7 @@ def _solve_mirror(grid: Grid) -> Optional[Grid]:
         return None
 
     # Collect non-background colors and their cells
-    color_cells: Dict[int, List[Tuple[int, int]]] = {}
+    color_cells: dict[int, list[tuple[int, int]]] = {}
     for r in range(H):
         for c in range(W):
             v = grid[r][c]
@@ -117,7 +117,7 @@ class MirrorAcrossDividerSolver(BaseSolver):
     def name(self) -> str:
         return "MirrorAcrossDividerSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Validate on training pairs
         for pair in ctx.train_pairs:
             pred = _solve_mirror(pair["input"])
@@ -147,7 +147,7 @@ class MirrorAcrossDividerSolver(BaseSolver):
 #   Tile: for k in 0..N/period-1, place color at P[(pos0+k*period+off)%N]
 #         for off in 0..L-1.
 
-def _build_perimeter(H: int, W: int) -> List[Tuple[int, int]]:
+def _build_perimeter(H: int, W: int) -> list[tuple[int, int]]:
     P = []
     for c in range(W):            P.append((0, c))
     for r in range(1, H):         P.append((r, W - 1))
@@ -155,7 +155,7 @@ def _build_perimeter(H: int, W: int) -> List[Tuple[int, int]]:
     for r in range(H - 2, 0, -1): P.append((r, 0))
     return P
 
-def _find_start_pos(positions: List[int], N: int) -> int:
+def _find_start_pos(positions: list[int], N: int) -> int:
     """Return the start of a (possibly wrapping) contiguous run on a circular perimeter."""
     if not positions:
         raise ValueError("Empty positions")
@@ -172,7 +172,7 @@ def _find_start_pos(positions: List[int], N: int) -> int:
     # Start is the element right after the largest gap
     return sorted_pos[(max_gap_idx + 1) % L]
 
-def _solve_perimeter(grid: Grid) -> Optional[Grid]:
+def _solve_perimeter(grid: Grid) -> Grid | None:
     H, W = len(grid), len(grid[0])
     P = _build_perimeter(H, W)
     N = len(P)
@@ -226,7 +226,7 @@ class PerimeterTilingSolver(BaseSolver):
     def name(self) -> str:
         return "PerimeterTilingSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Validate on training pairs
         for pair in ctx.train_pairs:
             pred = _solve_perimeter(pair["input"])
@@ -256,13 +256,13 @@ class PerimeterTilingSolver(BaseSolver):
 #     • Empty side     → mirror of original shape across the divider,
 #                         colors unchanged (A stays A, B stays B).
 
-def _solve_color_swap_mirror(grid: Grid) -> Optional[Grid]:
+def _solve_color_swap_mirror(grid: Grid) -> Grid | None:
     BG = 0
     DIVIDER = 1
     H, W = len(grid), len(grid[0])
 
     # Detect full-column or full-row divider
-    div_kind: Optional[str] = None
+    div_kind: str | None = None
     div_param: int = 0
 
     for c in range(W):
@@ -345,7 +345,7 @@ class ColorSwapMirrorSolver(BaseSolver):
     def name(self) -> str:
         return "ColorSwapMirrorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_color_swap_mirror(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):

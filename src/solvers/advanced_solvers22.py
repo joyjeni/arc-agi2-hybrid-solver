@@ -6,12 +6,12 @@ advanced_solvers22.py — 4 pattern solvers
   DiagonalWedgeFillSolver      (1f0c79e5)
 """
 from __future__ import annotations
+
 from collections import Counter
-from typing import Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
-
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -43,7 +43,7 @@ def _verify_exact(a: Grid, b: Grid) -> bool:
 # Separator rows/cols stay 0.
 # ---------------------------------------------------------------------------
 
-def _block_complement_transform(grid: Grid) -> Optional[Grid]:
+def _block_complement_transform(grid: Grid) -> Grid | None:
     R, C = len(grid), len(grid[0])
 
     sep_rows = set(r for r in range(R) if all(grid[r][c] == 0 for c in range(C)))
@@ -82,7 +82,7 @@ class BlockComplementSolver(BaseSolver):
     def name(self) -> str:
         return "BlockComplementSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -118,7 +118,7 @@ class BlockComplementSolver(BaseSolver):
 # Transform: center(9→5), edge-in-direction(5→9), 6-cell(6→9)
 # ---------------------------------------------------------------------------
 
-def _five_box_direction_transform(grid: Grid) -> Optional[Grid]:
+def _five_box_direction_transform(grid: Grid) -> Grid | None:
     R, C = len(grid), len(grid[0])
 
     sep_rows = sorted(r for r in range(R) if all(grid[r][c] == 0 for c in range(C)))
@@ -192,7 +192,7 @@ class FiveBoxDirectionSolver(BaseSolver):
     def name(self) -> str:
         return "FiveBoxDirectionSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -228,7 +228,7 @@ class FiveBoxDirectionSolver(BaseSolver):
 # Larger group → 8; smaller → 2.
 # ---------------------------------------------------------------------------
 
-def _diagonal_type_transform(grid: Grid) -> Optional[Grid]:
+def _diagonal_type_transform(grid: Grid) -> Grid | None:
     R, C = len(grid), len(grid[0])
 
     def is5(r, c):
@@ -290,7 +290,7 @@ class DiagonalTypeClassifierSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalTypeClassifierSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -345,7 +345,7 @@ def _find_2x2_blocks(grid: Grid):
     return blocks
 
 
-def _diagonal_wedge_fill_transform(grid: Grid) -> Optional[Grid]:
+def _diagonal_wedge_fill_transform(grid: Grid) -> Grid | None:
     R, C = len(grid), len(grid[0])
     blocks = _find_2x2_blocks(grid)
     if not blocks:
@@ -418,7 +418,7 @@ class DiagonalWedgeFillSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalWedgeFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]

@@ -22,7 +22,8 @@ import json
 import logging
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, wait as _fut_wait
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import wait as _fut_wait
 from pathlib import Path
 
 from .core.interfaces import SolverResult, TaskContext
@@ -164,9 +165,9 @@ def run_stage3(
     Stage-3 hints (TTT best guesses) are written into ctx.stage3_hints for
     downstream stages to use as fallback attempt_2.
     """
-    from .llm.qwen3_ttt_solver import Qwen3TTTSolver
     from .llm.chakra_ensemble import ChakraEnsembleSolver
     from .llm.program_synth import ProgramSynthesisSolver
+    from .llm.qwen3_ttt_solver import Qwen3TTTSolver
 
     pending = {tid: ctx for tid, ctx in tasks.items() if tid not in already_solved}
     n_pending = len(pending)
@@ -241,7 +242,7 @@ def run_stage3(
             if _remaining() < 30:
                 break
             try:
-                res = ps_solver._timed_solve(ctx)
+                res = ps_solver._timed_solve(ctx, timeout_s=per_ps)
                 if res and res.solved:
                     results[tid] = res
                     solved_so_far.add(tid)

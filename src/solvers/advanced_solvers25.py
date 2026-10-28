@@ -33,14 +33,12 @@ Solvers:
 
 from __future__ import annotations
 
-import copy
 from collections import Counter, deque
-from typing import List, Optional, Dict, Tuple
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
+from src.core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -59,7 +57,7 @@ def _grid_vals(grid: Grid) -> set:
 # 1. ColParityRecolorSolver  (d406998b)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _col_parity_solve(grid: Grid, v1: int, v2: int) -> Optional[Grid]:
+def _col_parity_solve(grid: Grid, v1: int, v2: int) -> Grid | None:
     """Apply parity recolor: (W-c) odd → v2, even → v1 for each v1 cell."""
     H = len(grid)
     W = len(grid[0]) if grid else 0
@@ -86,13 +84,13 @@ class ColParityRecolorSolver(BaseSolver):
     def name(self) -> str:
         return "ColParityRecolorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 
         # --- learn v1 and v2 from training pairs ---
-        v1: Optional[int] = None
-        v2: Optional[int] = None
+        v1: int | None = None
+        v2: int | None = None
 
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
@@ -149,7 +147,7 @@ class ColParityRecolorSolver(BaseSolver):
 # 2. CellularAutomatonPairSolver  (b5bb5719)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _ca_pair_solve(grid: Grid, v1: int, v2: int, bg: int) -> Optional[Grid]:
+def _ca_pair_solve(grid: Grid, v1: int, v2: int, bg: int) -> Grid | None:
     """Cascade from row 0 using symmetric pair lookup."""
     H = len(grid)
     W = len(grid[0]) if grid else 0
@@ -195,7 +193,7 @@ class CellularAutomatonPairSolver(BaseSolver):
     def name(self) -> str:
         return "CellularAutomatonPairSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 
@@ -261,13 +259,13 @@ class CellularAutomatonPairSolver(BaseSolver):
 # 3. ArrowDirectedMirrorSolver  (760b3cac)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _arrow_mirror_solve(grid: Grid) -> Optional[Grid]:
+def _arrow_mirror_solve(grid: Grid) -> Grid | None:
     """Detect arrow direction and horizontally mirror the other shape."""
     H = len(grid)
     W = len(grid[0]) if grid else 0
 
     # Collect cells per non-zero value
-    shapes: Dict[int, List[Tuple[int, int]]] = {}
+    shapes: dict[int, list[tuple[int, int]]] = {}
     for r in range(H):
         for c in range(W):
             v = grid[r][c]
@@ -312,7 +310,7 @@ def _arrow_mirror_solve(grid: Grid) -> Optional[Grid]:
     center_col = sum(bar_cols) / len(bar_cols)
 
     # Extra arm: non-bar cell NOT at center column
-    extra_arm: Optional[Tuple[int, int]] = None
+    extra_arm: tuple[int, int] | None = None
     for r, c in arrow_cells:
         if r != bar_row and abs(c - center_col) > 0.01:
             extra_arm = (r, c)
@@ -351,7 +349,7 @@ class ArrowDirectedMirrorSolver(BaseSolver):
     def name(self) -> str:
         return "ArrowDirectedMirrorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # --- validate all training pairs ---
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
@@ -385,7 +383,7 @@ class ArrowDirectedMirrorSolver(BaseSolver):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _connected_components(grid: Grid, val: int,
-                           connectivity: int = 4) -> List[List[Tuple[int, int]]]:
+                           connectivity: int = 4) -> list[list[tuple[int, int]]]:
     """Return list of connected components of cells equal to val.
 
     connectivity=4 uses cardinal neighbours; connectivity=8 adds diagonals.
@@ -403,7 +401,7 @@ def _connected_components(grid: Grid, val: int,
     for start in target:
         if start in visited:
             continue
-        comp: List[Tuple[int, int]] = []
+        comp: list[tuple[int, int]] = []
         queue = deque([start])
         visited.add(start)
         while queue:
@@ -418,10 +416,10 @@ def _connected_components(grid: Grid, val: int,
     return components
 
 
-def _bbox_fill_solve(grid: Grid, cluster_val: int, fill_val: int) -> Optional[Grid]:
+def _bbox_fill_solve(grid: Grid, cluster_val: int, fill_val: int) -> Grid | None:
     """Fill 0s inside each cluster's bounding box with fill_val."""
-    H = len(grid)
-    W = len(grid[0]) if grid else 0
+    len(grid)
+    len(grid[0]) if grid else 0
     components = _connected_components(grid, cluster_val, connectivity=8)
     if not components:
         return None
@@ -447,7 +445,7 @@ class BoundingBoxFillSolver(BaseSolver):
     def name(self) -> str:
         return "BoundingBoxFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 

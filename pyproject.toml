@@ -40,4 +40,16 @@ select = ["E", "F", "I", "N", "W", "UP"]
 ignore = [
     "E501",   # line too long — handled by formatter
     "E402",   # module-level import not at top — scripts use sys.path.insert legitimately
+    # Grid code conventions: H, W, R, C, G for height/width/rows/cols/grid are standard
+    # in ARC solvers, so pep8-naming's lowercase rules produce noise, not signal.
+    "N802",   # function name should be lowercase
+    "N803",   # argument name should be lowercase
+    "N806",   # variable in function should be lowercase
+    # Compact one-line guards (`if x: continue`) are used throughout the solvers.
+    "E701",   # multiple statements on one line (colon)
+    "E702",   # multiple statements on one line (semicolon)
 ]
+
+[tool.ruff.lint.per-file-ignores]
+# Import order here is registration order, which decides which solver answers first.
+"src/solvers/__init__.py" = ["I001"]

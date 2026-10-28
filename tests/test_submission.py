@@ -133,3 +133,21 @@ class TestAugmentation(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_build_submission_converts_numpy_ints_to_plain_ints():
+    """A solver returning numpy values must not break json.dumps of the submission."""
+    import json
+
+    import numpy as np
+
+    from src.core.interfaces import Prediction, SolverResult, TaskContext
+    from src.core.submission import build_submission
+
+    ctx = TaskContext(task_id="t", train_pairs=[], test_inputs=[[[0, 1]]])
+    grid = np.array([[1, 2], [3, 4]], dtype=np.int64)
+    res = SolverResult(task_id="t", predictions=[Prediction(attempt_1=grid, attempt_2=grid.tolist())])
+    sub = build_submission({"t": ctx}, {"t": res})
+    assert sub["t"][0]["attempt_1"] == [[1, 2], [3, 4]]
+    assert all(type(v) is int for row in sub["t"][0]["attempt_1"] for v in row)
+    json.dumps(sub)  # must not raise

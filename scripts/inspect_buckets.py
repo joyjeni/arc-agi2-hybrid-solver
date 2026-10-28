@@ -1,7 +1,7 @@
 """
 Inspect sample tasks from each sub-bucket to understand actual patterns.
 """
-import json, sys
+import json
 from pathlib import Path
 
 ROOT = Path("/home/sandbox/arc-jeni-2026")
@@ -42,7 +42,8 @@ for tid in dc["recolor_diff_colors_sub"].get("NEW_COLORS_APPEAR", [])[:5]:
     show_task(tid)
 
 print("\n\n=== SHRINK samples ===")
-from scripts.pattern_audit import *  # just get the bucket
+import scripts.pattern_audit  # noqa: F401  (side effect: runs the audit, writing /tmp/pattern_audit.json)
+
 audit = json.loads(open('/tmp/pattern_audit.json').read())
 for tid in audit["buckets"].get("SHRINK", [])[:5]:
     show_task(tid)

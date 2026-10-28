@@ -9,19 +9,16 @@ advanced_solvers14.py — 5 new crop-rule solvers (all rules confirmed)
 """
 
 from collections import Counter, deque
-from typing import List, Optional, Tuple
 
-from src.core.interfaces import (
-    BaseSolver, TaskContext, SolverResult, Prediction, Grid
-)
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
-
 
 # ---------------------------------------------------------------------------
 # Shared helpers
 # ---------------------------------------------------------------------------
 
-def _bbox(cells) -> Tuple[int, int, int, int]:
+def _bbox(cells) -> tuple[int, int, int, int]:
     """Return (r0, c0, r1, c1) bounding box for a list of (r,c) cells."""
     r0 = min(r for r, c in cells)
     c0 = min(c for r, c in cells)
@@ -34,7 +31,7 @@ def _extract(grid: Grid, r0: int, c0: int, r1: int, c1: int) -> Grid:
     return [list(row[c0: c1 + 1]) for row in grid[r0: r1 + 1]]
 
 
-def _components_8(grid: Grid, color: int) -> List[List[Tuple[int, int]]]:
+def _components_8(grid: Grid, color: int) -> list[list[tuple[int, int]]]:
     """BFS 8-connected components for a specific color (pure Python)."""
     H, W = len(grid), len(grid[0])
     visited = [[False] * W for _ in range(H)]
@@ -61,7 +58,7 @@ def _components_8(grid: Grid, color: int) -> List[List[Tuple[int, int]]]:
     return comps
 
 
-def _make_result(ctx: TaskContext, preds: List[Grid]) -> SolverResult:
+def _make_result(ctx: TaskContext, preds: list[Grid]) -> SolverResult:
     predictions = [
         Prediction(attempt_1=p, attempt_2=p, solver_name=ctx.task_id)
         for p in preds
@@ -87,7 +84,7 @@ class Color5BBoxExpandSolver(BaseSolver):
     def name(self) -> str:
         return "Color5BBoxExpandSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -97,7 +94,7 @@ class Color5BBoxExpandSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         cells = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 5]
         if not cells:
@@ -126,7 +123,7 @@ class MedianColorObjectSolver(BaseSolver):
     def name(self) -> str:
         return "MedianColorObjectSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -145,7 +142,7 @@ class MedianColorObjectSolver(BaseSolver):
                     return False
         return True
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         flat = [grid[r][c] for r in range(H) for c in range(W)]
         bg = Counter(flat).most_common(1)[0][0]
@@ -181,7 +178,7 @@ class AsymmetricComponentCropSolver(BaseSolver):
     def name(self) -> str:
         return "AsymmetricComponentCropSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -201,7 +198,7 @@ class AsymmetricComponentCropSolver(BaseSolver):
                     return False
         return True
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         flat = [grid[r][c] for r in range(H) for c in range(W)]
         bg = Counter(flat).most_common(1)[0][0]
@@ -210,7 +207,7 @@ class AsymmetricComponentCropSolver(BaseSolver):
         if not colors:
             return None
         # Collect all 8-connected components across all non-bg colors
-        all_comps: List[Tuple[List, int, int, int, int]] = []
+        all_comps: list[tuple[list, int, int, int, int]] = []
         for col in colors:
             for comp in _components_8(grid, col):
                 r0, c0, r1, c1 = _bbox(comp)
@@ -245,7 +242,7 @@ class MaxColor2InBBoxSolver(BaseSolver):
     def name(self) -> str:
         return "MaxColor2InBBoxSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -255,7 +252,7 @@ class MaxColor2InBBoxSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         comps = _components_8(grid, 1)
         if not comps:
             return None
@@ -309,7 +306,7 @@ class SeparatorGridCropSolver(BaseSolver):
     def name(self) -> str:
         return "SeparatorGridCropSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -320,7 +317,7 @@ class SeparatorGridCropSolver(BaseSolver):
         return _make_result(ctx, preds)
 
     @staticmethod
-    def _find_sep_color(grid: Grid, bg: int) -> Optional[int]:
+    def _find_sep_color(grid: Grid, bg: int) -> int | None:
         H, W = len(grid), len(grid[0])
         candidates = set()
         # Any color that fills at least one complete row or col
@@ -363,7 +360,7 @@ class SeparatorGridCropSolver(BaseSolver):
                     weak_cols.append(c)
         return weak_rows, weak_cols
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         flat = [grid[r][c] for r in range(H) for c in range(W)]
         bg = Counter(flat).most_common(1)[0][0]

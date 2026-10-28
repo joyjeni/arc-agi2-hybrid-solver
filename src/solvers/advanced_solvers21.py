@@ -7,9 +7,9 @@ advanced_solvers21.py — 4 pattern solvers for ARC-AGI-2
 """
 
 from collections import Counter
-from typing import Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 
@@ -67,7 +67,7 @@ def _detect_border(grid: Grid):
     return None
 
 
-def _solve_flood_toward_border(grid: Grid) -> Optional[Grid]:
+def _solve_flood_toward_border(grid: Grid) -> Grid | None:
     info = _detect_border(grid)
     if info is None:
         return None
@@ -135,7 +135,7 @@ class FloodTowardBorderSolver(BaseSolver):
     def name(self) -> str:
         return "FloodTowardBorderSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 if _detect_border(pair["input"]) is None:
@@ -169,7 +169,7 @@ class FloodTowardBorderSolver(BaseSolver):
 #
 # ===========================================================================
 
-def _solve_column_partition(grid: Grid) -> Optional[Grid]:
+def _solve_column_partition(grid: Grid) -> Grid | None:
     """
     Only columns whose last (bottom-most) marker sits at row H-1 are processed.
     Unprocessed columns are kept as-is from input.
@@ -212,7 +212,7 @@ class ColumnPartitionSolver(BaseSolver):
     def name(self) -> str:
         return "ColumnPartitionSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 result = _solve_column_partition(pair["input"])
@@ -256,7 +256,7 @@ def _find_rect_of_fives(grid: Grid):
     return (min(rows), min(cols), max(rows), max(cols))
 
 
-def _solve_filled_rectangle_partition(grid: Grid) -> Optional[Grid]:
+def _solve_filled_rectangle_partition(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0]) if H else 0
     rect = _find_rect_of_fives(grid)
@@ -339,7 +339,7 @@ class FilledRectanglePartitionSolver(BaseSolver):
     def name(self) -> str:
         return "FilledRectanglePartitionSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 if _find_rect_of_fives(pair["input"]) is None:
@@ -371,7 +371,7 @@ class FilledRectanglePartitionSolver(BaseSolver):
 #
 # ===========================================================================
 
-def _solve_cross_around_pixel(grid: Grid) -> Optional[Grid]:
+def _solve_cross_around_pixel(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0]) if H else 0
     fives = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 5]
@@ -398,7 +398,7 @@ class CrossAroundPixelSolver(BaseSolver):
     def name(self) -> str:
         return "CrossAroundPixelSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         try:
             for pair in ctx.train_pairs:
                 result = _solve_cross_around_pixel(pair["input"])
