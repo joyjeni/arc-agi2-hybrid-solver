@@ -12,10 +12,9 @@ advanced_solvers31.py — Two solvers from Robina Mirbahar reference notebook
      is a cavity → recolor it to yellow 4.
 """
 
-from typing import List, Optional, Tuple
-from collections import deque, Counter
+from collections import Counter, deque
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -39,7 +38,7 @@ def _verify_exact(pred: Grid, expected: Grid) -> bool:
 # Solver 1 — Ray-Guided Face Recoloring & Spike Pruning  (task 3d588dc9)
 # ---------------------------------------------------------------------------
 
-def _solve_3d588dc9(g: Grid) -> Optional[Grid]:
+def _solve_3d588dc9(g: Grid) -> Grid | None:
     h = len(g)
     if h == 0:
         return None
@@ -59,7 +58,7 @@ def _solve_3d588dc9(g: Grid) -> Optional[Grid]:
 
     # BFS: find all black (0) connected components ≥6 cells
     vis = [[False] * w for _ in range(h)]
-    best_comp: Optional[List[Tuple[int, int]]] = None
+    best_comp: list[tuple[int, int]] | None = None
     best_overlap = -1
 
     for sr in range(h):
@@ -67,7 +66,7 @@ def _solve_3d588dc9(g: Grid) -> Optional[Grid]:
             if g[sr][sc] == 0 and not vis[sr][sc]:
                 q: deque = deque([(sr, sc)])
                 vis[sr][sc] = True
-                cells: List[Tuple[int, int]] = []
+                cells: list[tuple[int, int]] = []
                 while q:
                     cr, cc = q.popleft()
                     cells.append((cr, cc))
@@ -128,7 +127,7 @@ class RayGuidedFaceRecolorSolver(BaseSolver):
     def name(self) -> str:
         return "RayGuidedFaceRecolorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Verify on all train pairs
         for pair in ctx.train_pairs:
             pred = _solve_3d588dc9(pair["input"])
@@ -149,7 +148,7 @@ class RayGuidedFaceRecolorSolver(BaseSolver):
 # Solver 2 — Perimeter BFS Cavity Enclosure  (task 00d62c1b)
 # ---------------------------------------------------------------------------
 
-def _solve_00d62c1b(g: Grid) -> Optional[Grid]:
+def _solve_00d62c1b(g: Grid) -> Grid | None:
     h = len(g)
     if h == 0:
         return None
@@ -199,7 +198,7 @@ class PerimeterBFSCavitySolver(BaseSolver):
     def name(self) -> str:
         return "PerimeterBFSCavitySolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Verify on all train pairs
         for pair in ctx.train_pairs:
             pred = _solve_00d62c1b(pair["input"])
@@ -275,7 +274,7 @@ class ShapeRecolorByKeyColorSolver(BaseSolver):
         out[kr][kc] = bg
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         # Verify all training pairs
@@ -398,7 +397,7 @@ class SeedAdjacentGroupRecolorSolver(BaseSolver):
             out[sr][sc] = bg
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         for p in ctx.train_pairs:

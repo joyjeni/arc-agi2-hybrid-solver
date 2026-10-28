@@ -4,14 +4,18 @@
    (horizontally, vertically, or rotationally)
 3. Save results to /tmp/
 """
-import json, sys, time, traceback, numpy as np
+import json
+import sys
+import time
 from pathlib import Path
+
+import numpy as np
 
 ROOT = Path("/home/sandbox/arc-jeni-2026")
 sys.path.insert(0, str(ROOT))
 
-from src.solvers import REGISTRY
 from src.core.interfaces import TaskContext
+from src.solvers import REGISTRY
 
 train_challenges = json.loads((ROOT / "data/arc-agi_training_challenges.json").read_text())
 train_solutions  = json.loads((ROOT / "data/arc-agi_training_solutions.json").read_text())
@@ -110,7 +114,7 @@ for tid in unsolved:
     else:
         mixed.append(tid)
 
-print(f"\nBuckets (fresh, truly unsolved):")
+print("\nBuckets (fresh, truly unsolved):")
 print(f"  same_size: {len(same_size)}")
 print(f"  grow:      {len(grow)}")
 print(f"  shrink:    {len(shrink)}")

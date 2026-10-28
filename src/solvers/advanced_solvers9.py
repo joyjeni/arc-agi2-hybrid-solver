@@ -9,14 +9,13 @@ Solvers:
 """
 from __future__ import annotations
 
+from collections import deque
+
 import numpy as np
-from collections import Counter, deque
-from typing import List, Tuple, Optional
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
 from ..core.grid_codec import background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
-
 
 # ---------------------------------------------------------------------------
 # Helper utilities
@@ -126,7 +125,7 @@ class ConcentricRingReversalSolver(BaseSolver):
     def _verify(self, inp: np.ndarray, expected: np.ndarray) -> bool:
         return np.array_equal(self._apply(inp), expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if not self._verify(np.array(pair['input']), np.array(pair['output'])):
                 return None
@@ -206,7 +205,7 @@ class CheckerboardLayerColorSolver(BaseSolver):
         outer_color, inner_color, max_outer_dist = result
         return np.array_equal(self._apply_with_colors(inp, outer_color, inner_color, max_outer_dist), expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         outer_color = None
         inner_color = None
         max_outer_dist = 0
@@ -300,7 +299,7 @@ class RayToRectangleSolver(BaseSolver):
     def _verify(self, inp: np.ndarray, expected: np.ndarray) -> bool:
         return np.array_equal(self._apply(inp), expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             if not self._verify(np.array(pair['input']), np.array(pair['output'])):
                 return None
@@ -353,7 +352,7 @@ class ScatterNoiseRemovalSolver(BaseSolver):
     def _verify(self, inp: np.ndarray, expected: np.ndarray) -> bool:
         return np.array_equal(self._apply(inp), expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         has_isolated = False
         for pair in ctx.train_pairs:
             inp = np.array(pair['input'])
@@ -426,7 +425,7 @@ class CheckerboardInteriorSolver(BaseSolver):
     def _verify(self, inp: np.ndarray, expected: np.ndarray) -> bool:
         return np.array_equal(self._apply(inp), expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Must have at least one interior row across all training rectangles
         has_interior = False
         for pair in ctx.train_pairs:

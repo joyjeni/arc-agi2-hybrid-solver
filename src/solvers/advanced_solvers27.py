@@ -8,9 +8,8 @@ advanced_solvers27.py — Four gravity/ring solvers for ARC-AGI-2
 """
 
 from collections import Counter, deque
-from typing import List, Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -72,7 +71,7 @@ class GravityDownLargeSolver(BaseSolver):
         return "GravityDownLargeSolver"
 
     def _apply(self, inp: Grid, bg: int) -> Grid:
-        rows, cols = len(inp), len(inp[0])
+        rows, _cols = len(inp), len(inp[0])
         components = _connected_components(inp, bg)
         pred = [list(row) for row in inp]
 
@@ -89,7 +88,7 @@ class GravityDownLargeSolver(BaseSolver):
 
         return pred
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -126,15 +125,15 @@ class GravityUpBySizeSolver(BaseSolver):
     def name(self) -> str:
         return "GravityUpBySizeSolver"
 
-    def _get_floor_color(self, inp: Grid, bg: int) -> Optional[int]:
+    def _get_floor_color(self, inp: Grid, bg: int) -> int | None:
         rows = len(inp)
         non_bg = [v for v in inp[rows - 1] if v != bg]
         if not non_bg:
             return None
         return Counter(non_bg).most_common(1)[0][0]
 
-    def _apply(self, inp: Grid, bg: int, floor_color: int) -> Optional[Grid]:
-        rows, cols = len(inp), len(inp[0])
+    def _apply(self, inp: Grid, bg: int, floor_color: int) -> Grid | None:
+        rows, _cols = len(inp), len(inp[0])
         components = _connected_components(inp, bg, exclude=floor_color)
         pred = [list(row) for row in inp]
 
@@ -154,7 +153,7 @@ class GravityUpBySizeSolver(BaseSolver):
 
         return pred
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -211,7 +210,7 @@ class GravityDownOneRowGapSolver(BaseSolver):
         struct_color = Counter(bottom_non_bg).most_common(1)[0][0] if bottom_non_bg else None
         return bg, struct_color
 
-    def _floor_cols(self, inp: Grid, struct_color) -> List[int]:
+    def _floor_cols(self, inp: Grid, struct_color) -> list[int]:
         rows, cols = len(inp), len(inp[0])
         result = []
         for c in range(cols):
@@ -267,7 +266,7 @@ class GravityDownOneRowGapSolver(BaseSolver):
 
         return pred
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -304,7 +303,7 @@ class ConcentricRingsColorCycleSolver(BaseSolver):
     def name(self) -> str:
         return "ConcentricRingsColorCycleSolver"
 
-    def _get_ring_colors(self, inp: Grid) -> Optional[List[int]]:
+    def _get_ring_colors(self, inp: Grid) -> list[int] | None:
         rows, cols = len(inp), len(inp[0])
         colors = []
         seen = set()
@@ -330,7 +329,7 @@ class ConcentricRingsColorCycleSolver(BaseSolver):
     def _apply(self, inp: Grid, color_map: dict) -> Grid:
         return [[color_map.get(v, v) for v in row] for row in inp]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None

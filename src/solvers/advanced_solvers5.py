@@ -9,20 +9,19 @@ Three fully-analyzed structural patterns:
 
 from __future__ import annotations
 
-import numpy as np
 from collections import Counter
-from typing import Optional, List, Tuple, Dict
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
-from ..core.grid_codec import background_color
+import numpy as np
+
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
 
-def _sh(g: Grid) -> Tuple[int, int]:
+def _sh(g: Grid) -> tuple[int, int]:
     return len(g), (len(g[0]) if g else 0)
 
 
@@ -51,7 +50,7 @@ def _same_shape(a: Grid, b: Grid) -> bool:
     return _sh(a) == _sh(b)
 
 
-def _result(ctx: TaskContext, grids: List[Grid], name: str) -> SolverResult:
+def _result(ctx: TaskContext, grids: list[Grid], name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
 
@@ -77,13 +76,13 @@ class ColorKeyStampSolver(BaseSolver):
     def name(self) -> str:
         return "ColorKeyStampSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         grid = _np(inp)
         H, W = grid.shape
         bg = _bg(inp)
 
         # --- 1. Detect key strip ---
-        key_order: Optional[List[int]] = None
+        key_order: list[int] | None = None
         strip_rows: set = set()
 
         for start in range(H):
@@ -98,7 +97,7 @@ class ColorKeyStampSolver(BaseSolver):
                 else:
                     break
             if count >= 3:
-                seen: List[int] = []
+                seen: list[int] = []
                 for v in row.tolist():
                     if v != bg and v not in seen:
                         seen.append(v)
@@ -110,7 +109,7 @@ class ColorKeyStampSolver(BaseSolver):
             return None
 
         # --- 2. Collect non-strip, non-bg cells grouped by color ---
-        color_cells: Dict[int, List[Tuple[int, int]]] = {}
+        color_cells: dict[int, list[tuple[int, int]]] = {}
         for r in range(H):
             if r in strip_rows:
                 continue
@@ -120,7 +119,7 @@ class ColorKeyStampSolver(BaseSolver):
                     color_cells.setdefault(val, []).append((r, c))
 
         # --- 3. Key shapes: which key colors already have shapes ---
-        key_shapes: Dict[int, Dict] = {}
+        key_shapes: dict[int, dict] = {}
         for kc in key_order:
             if kc in color_cells:
                 cells = color_cells[kc]
@@ -135,7 +134,7 @@ class ColorKeyStampSolver(BaseSolver):
 
         if len(key_shapes) >= 1:
             # --- Case A: anchor on existing key-colored shapes ---
-            anchors: List[Tuple[int, Dict]] = [
+            anchors: list[tuple[int, dict]] = [
                 (key_order.index(kc), s) for kc, s in key_shapes.items()
             ]
             anchors.sort(key=lambda x: x[0])
@@ -165,7 +164,7 @@ class ColorKeyStampSolver(BaseSolver):
 
         else:
             # --- Case B: no key colors present — use non-key template ---
-            template_cells: Optional[List[Tuple[int, int]]] = None
+            template_cells: list[tuple[int, int]] | None = None
             for color, cells in color_cells.items():
                 if color not in key_order:
                     template_cells = cells
@@ -194,7 +193,7 @@ class ColorKeyStampSolver(BaseSolver):
         pred = self._apply(inp)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -203,7 +202,7 @@ class ColorKeyStampSolver(BaseSolver):
             if not self._verify(p["input"], p["output"]):
                 return None
 
-        results: List[Grid] = []
+        results: list[Grid] = []
         for ti in ctx.test_inputs:
             out = self._apply(ti)
             if out is None:
@@ -231,7 +230,7 @@ class GridCellStampSolver(BaseSolver):
     def name(self) -> str:
         return "GridCellStampSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         grid = _np(inp)
         H, W = grid.shape
         bg = _bg(inp)
@@ -243,8 +242,8 @@ class GridCellStampSolver(BaseSolver):
         if not div_rows or not div_cols:
             return None
 
-        def get_bands(size: int, divs: List[int]) -> List[Tuple[int, int]]:
-            bands: List[Tuple[int, int]] = []
+        def get_bands(size: int, divs: list[int]) -> list[tuple[int, int]]:
+            bands: list[tuple[int, int]] = []
             prev = 0
             for d in sorted(set(divs)):
                 if d > prev:
@@ -261,9 +260,9 @@ class GridCellStampSolver(BaseSolver):
             return None
 
         # --- 2. Identify shape cell and trigger cells ---
-        shape_content: Optional[np.ndarray] = None
+        shape_content: np.ndarray | None = None
         shape_h = shape_w = 0
-        trigger_list: List[Tuple[int, int, int, int]] = []
+        trigger_list: list[tuple[int, int, int, int]] = []
 
         for r1, r2 in row_bands:
             for c1, c2 in col_bands:
@@ -296,7 +295,7 @@ class GridCellStampSolver(BaseSolver):
         pred = self._apply(inp)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -305,7 +304,7 @@ class GridCellStampSolver(BaseSolver):
             if not self._verify(p["input"], p["output"]):
                 return None
 
-        results: List[Grid] = []
+        results: list[Grid] = []
         for ti in ctx.test_inputs:
             out = self._apply(ti)
             if out is None:
@@ -332,7 +331,7 @@ class NoisyRepeatGridCleanSolver(BaseSolver):
     def name(self) -> str:
         return "NoisyRepeatGridCleanSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         grid = _np(inp)
         H, W = grid.shape
 
@@ -343,8 +342,8 @@ class NoisyRepeatGridCleanSolver(BaseSolver):
         if len(sep_rows) < 2 or len(sep_cols) < 2:
             return None
 
-        def get_bands(size: int, seps: set) -> List[Tuple[int, int]]:
-            bands: List[Tuple[int, int]] = []
+        def get_bands(size: int, seps: set) -> list[tuple[int, int]]:
+            bands: list[tuple[int, int]] = []
             in_band = False
             start = 0
             for i in range(size):
@@ -401,7 +400,7 @@ class NoisyRepeatGridCleanSolver(BaseSolver):
         pred = self._apply(inp)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -410,7 +409,7 @@ class NoisyRepeatGridCleanSolver(BaseSolver):
             if not self._verify(p["input"], p["output"]):
                 return None
 
-        results: List[Grid] = []
+        results: list[Grid] = []
         for ti in ctx.test_inputs:
             out = self._apply(ti)
             if out is None:

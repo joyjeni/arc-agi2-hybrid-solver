@@ -20,20 +20,18 @@ Targeting newly analysed unsolved buckets:
 """
 
 from __future__ import annotations
-import copy
-from collections import Counter, deque
-from typing import Optional, List, Tuple
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
-from ..core.grid_codec import background_color
+from collections import Counter, deque
+
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
 
-def _sh(g: Grid) -> Tuple[int, int]:
+def _sh(g: Grid) -> tuple[int, int]:
     return len(g), (len(g[0]) if g else 0)
 
 def _clone(g: Grid) -> Grid:
@@ -47,7 +45,7 @@ def _result(ctx: TaskContext, grids, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
 
-def _bfs4(g: Grid, sr: int, sc: int, match_val: int) -> List[Tuple[int,int]]:
+def _bfs4(g: Grid, sr: int, sc: int, match_val: int) -> list[tuple[int,int]]:
     H, W = _sh(g)
     visited = {(sr, sc)}
     q = deque([(sr, sc)])
@@ -61,7 +59,7 @@ def _bfs4(g: Grid, sr: int, sc: int, match_val: int) -> List[Tuple[int,int]]:
                 visited.add((nr,nc)); q.append((nr,nc))
     return cells
 
-def _connected_components(g: Grid, bg: int) -> List[List[Tuple[int,int]]]:
+def _connected_components(g: Grid, bg: int) -> list[list[tuple[int,int]]]:
     H, W = _sh(g)
     visited = set()
     comps = []
@@ -115,7 +113,7 @@ class VoronoiColorFillSolver(BaseSolver):
                     out[r][c] = color_map[r][c]
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         # Detect consistent bg across training
         bgs = set()
@@ -190,7 +188,7 @@ class ConnectEndpointsSolver(BaseSolver):
         bg_set = set(_bg(p["input"]) for p in train_pairs)
         if len(bg_set) != 1: return None
         bg = bg_set.pop()
-        
+
         # Find all non-bg colors in inputs
         for p in train_pairs:
             inp, out = p["input"], p["output"]
@@ -204,20 +202,20 @@ class ConnectEndpointsSolver(BaseSolver):
             fill_colors = set(oc for _,_,oc in filled)
             if len(fill_colors) != 1: return None
             fill_color = fill_colors.pop()
-            
+
             # What source_color pairs are being connected?
             # Look for a non-bg, non-fill_color that has cells on same row/col
             inp_colors = set(inp[r][c] for r in range(H) for c in range(W) if inp[r][c]!=bg)
             inp_colors.discard(fill_color)
             if not inp_colors: return None
-            
+
             for src_color in inp_colors:
                 candidate = self._connect_pairs(inp, bg, src_color, fill_color)
                 if candidate == out:
                     return (src_color, fill_color, bg)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         rule = self._infer_rule(ctx.train_pairs)
         if rule is None: return None
@@ -246,7 +244,7 @@ class NearestSolidLineRecolorSolver(BaseSolver):
     @property
     def priority(self) -> int: return 64
 
-    def _solid_rows(self, grid: Grid) -> List[Tuple[int, int]]:
+    def _solid_rows(self, grid: Grid) -> list[tuple[int, int]]:
         """Returns list of (row_idx, color)."""
         H, W = _sh(grid)
         result = []
@@ -256,7 +254,7 @@ class NearestSolidLineRecolorSolver(BaseSolver):
                 result.append((r, list(colors)[0]))
         return result
 
-    def _solid_cols(self, grid: Grid) -> List[Tuple[int, int]]:
+    def _solid_cols(self, grid: Grid) -> list[tuple[int, int]]:
         H, W = _sh(grid)
         result = []
         for c in range(W):
@@ -265,7 +263,7 @@ class NearestSolidLineRecolorSolver(BaseSolver):
                 result.append((c, list(colors)[0]))
         return result
 
-    def _apply_row(self, grid: Grid, bg: int, solid_rows: List[Tuple[int,int]]) -> Grid:
+    def _apply_row(self, grid: Grid, bg: int, solid_rows: list[tuple[int,int]]) -> Grid:
         H, W = _sh(grid)
         out = _clone(grid)
         solid_row_set = {r for r, _ in solid_rows}
@@ -282,7 +280,7 @@ class NearestSolidLineRecolorSolver(BaseSolver):
                     out[r][c] = best_color
         return out
 
-    def _apply_col(self, grid: Grid, bg: int, solid_cols: List[Tuple[int,int]]) -> Grid:
+    def _apply_col(self, grid: Grid, bg: int, solid_cols: list[tuple[int,int]]) -> Grid:
         H, W = _sh(grid)
         out = _clone(grid)
         solid_col_set = {c for c, _ in solid_cols}
@@ -297,7 +295,7 @@ class NearestSolidLineRecolorSolver(BaseSolver):
                     out[r][c] = best_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             inp, out = p["input"], p["output"]
@@ -346,7 +344,7 @@ class ExtendRayFromMarkerSolver(BaseSolver):
     @property
     def priority(self) -> int: return 65
 
-    def _unique_color_cell(self, grid: Grid, bg: int) -> Optional[Tuple[int, int, int]]:
+    def _unique_color_cell(self, grid: Grid, bg: int) -> tuple[int, int, int] | None:
         """Find a cell whose color appears exactly once in grid, non-bg."""
         H, W = _sh(grid)
         color_count = Counter(grid[r][c] for r in range(H) for c in range(W))
@@ -356,7 +354,7 @@ class ExtendRayFromMarkerSolver(BaseSolver):
                     return (r, c, grid[r][c])
         return None
 
-    def _apply(self, grid: Grid, bg: int, direction: Tuple[int,int],
+    def _apply(self, grid: Grid, bg: int, direction: tuple[int,int],
                fill_color: int, include_marker: bool) -> Grid:
         H, W = _sh(grid)
         marker = self._unique_color_cell(grid, bg)
@@ -389,7 +387,7 @@ class ExtendRayFromMarkerSolver(BaseSolver):
                 if all_ok: return (direction, fill_color, bg)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             inp, out = p["input"], p["output"]
@@ -465,7 +463,7 @@ class EnclosedFloodFillSolver2(BaseSolver):
                 if all_ok: return (boundary_color, fill_color, bg)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -509,7 +507,6 @@ class RowPatternProjectSolver(BaseSolver):
 
                 # For each changed row, verify the change matches ref_cols
                 all_ok = True
-                marker_col = None; marker_role = None
                 for cr in changed_rows:
                     # What changed?
                     row_changes = [(c, inp[cr][c], out[cr][c]) for c in range(W) if inp[cr][c] != out[cr][c]]
@@ -546,7 +543,7 @@ class RowPatternProjectSolver(BaseSolver):
                             out[r][c] = fill_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -621,7 +618,7 @@ class MarkerColorsNearestCellSolver(BaseSolver):
             if all_ok: return target_color
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -668,7 +665,7 @@ class ColumnPatternProjectSolver(BaseSolver):
                             out[r][c] = fill_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -751,7 +748,7 @@ class ConnectSameColorInColumnSolver(BaseSolver):
                     if ok: return (src_color, fill_color, axis, bg)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -805,7 +802,7 @@ class TwoColorBandCrossSolver(BaseSolver):
                     if ok: return (h_color, v_color, cross_color, bg)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -853,7 +850,7 @@ class ReflectAboutCenterSolver(BaseSolver):
             if pred != p["output"]: return False
         return True
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for mode in ['hflip', 'vflip', 'both', 'rot90', 'rot270']:
             if self._check_mode(mode, ctx.train_pairs):
@@ -895,7 +892,7 @@ class ObjectColorByNeighborSolver(BaseSolver):
                 out[r][c] = nearest_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -925,7 +922,7 @@ class CopyNonzeroRowToZeroRowsSolver(BaseSolver):
     @property
     def priority(self) -> int: return 74
 
-    def _apply_row(self, inp: Grid) -> Optional[Grid]:
+    def _apply_row(self, inp: Grid) -> Grid | None:
         H, W = _sh(inp)
         nonzero_rows = [r for r in range(H) if any(v != 0 for v in inp[r])]
         zero_rows = [r for r in range(H) if all(v == 0 for v in inp[r])]
@@ -937,7 +934,7 @@ class CopyNonzeroRowToZeroRowsSolver(BaseSolver):
             out[r] = template[:]
         return out
 
-    def _apply_col(self, inp: Grid) -> Optional[Grid]:
+    def _apply_col(self, inp: Grid) -> Grid | None:
         H, W = _sh(inp)
         nonzero_cols = [c for c in range(W) if any(inp[r][c] != 0 for r in range(H))]
         zero_cols = [c for c in range(W) if all(inp[r][c] == 0 for r in range(H))]
@@ -949,7 +946,7 @@ class CopyNonzeroRowToZeroRowsSolver(BaseSolver):
                 out[r][c] = inp[r][nonzero_cols[0]]
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for axis, fn in [('row', self._apply_row), ('col', self._apply_col)]:
             ok = True
@@ -1002,7 +999,7 @@ class ShiftRowsColsByOffsetSolver(BaseSolver):
             for r in range(H): out[r][c] = shifted[r]
         return out
 
-    def _infer_row_offsets(self, inp: Grid, out: Grid) -> Optional[list]:
+    def _infer_row_offsets(self, inp: Grid, out: Grid) -> list | None:
         H, W = _sh(inp)
         offsets = []
         for r in range(H):
@@ -1014,7 +1011,7 @@ class ShiftRowsColsByOffsetSolver(BaseSolver):
             if not found: return None
         return offsets
 
-    def _infer_col_offsets(self, inp: Grid, out: Grid) -> Optional[list]:
+    def _infer_col_offsets(self, inp: Grid, out: Grid) -> list | None:
         H, W = _sh(inp)
         offsets = []
         for c in range(W):
@@ -1028,7 +1025,7 @@ class ShiftRowsColsByOffsetSolver(BaseSolver):
             if not found: return None
         return offsets
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         for p in ctx.train_pairs:
             if not p["input"] or not p["output"]: return None
@@ -1087,7 +1084,7 @@ class ColorRemapFromPaletteSolver(BaseSolver):
     def _apply(self, grid: Grid, cmap: dict) -> Grid:
         return [[cmap.get(v, v) for v in row] for row in grid]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs: return None
         cmap = self._infer_map(ctx.train_pairs)
         if cmap is None: return None

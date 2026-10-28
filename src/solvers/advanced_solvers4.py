@@ -20,20 +20,18 @@ Targets identified in unsolved-task analysis (session 4):
 """
 
 from __future__ import annotations
-import copy
-from collections import Counter, deque
-from typing import Optional, List, Tuple, Set, Dict
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
-from ..core.grid_codec import background_color
+from collections import Counter, deque
+
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ── shared helpers ─────────────────────────────────────────────────────────────
 
-def _sh(g: Grid) -> Tuple[int, int]:
+def _sh(g: Grid) -> tuple[int, int]:
     return len(g), (len(g[0]) if g else 0)
 
 def _clone(g: Grid) -> Grid:
@@ -43,14 +41,14 @@ def _bg(g: Grid) -> int:
     flat = [v for r in g for v in r]
     return Counter(flat).most_common(1)[0][0] if flat else 0
 
-def _result(ctx: TaskContext, grids: List[Grid], name: str) -> SolverResult:
+def _result(ctx: TaskContext, grids: list[Grid], name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=1)
 
-def _flood_exterior(g: Grid, bg: int) -> Set[Tuple[int, int]]:
+def _flood_exterior(g: Grid, bg: int) -> set[tuple[int, int]]:
     """BFS from all border-touching bg cells; returns the exterior bg set."""
     H, W = _sh(g)
-    vis: Set[Tuple[int, int]] = set()
+    vis: set[tuple[int, int]] = set()
     q: deque = deque()
     for r in range(H):
         for c in range(W):
@@ -66,16 +64,16 @@ def _flood_exterior(g: Grid, bg: int) -> Set[Tuple[int, int]]:
                 q.append((nr, nc))
     return vis
 
-def _same_color_components(g: Grid, bg: int) -> List[Tuple[int, Set[Tuple[int, int]]]]:
+def _same_color_components(g: Grid, bg: int) -> list[tuple[int, set[tuple[int, int]]]]:
     """Return list of (color, cells_set) for each 4-connected same-color component."""
     H, W = _sh(g)
-    visited: Set[Tuple[int, int]] = set()
+    visited: set[tuple[int, int]] = set()
     comps = []
     for r in range(H):
         for c in range(W):
             if g[r][c] != bg and (r, c) not in visited:
                 color = g[r][c]
-                comp: Set[Tuple[int, int]] = set()
+                comp: set[tuple[int, int]] = set()
                 stack = [(r, c)]
                 while stack:
                     cr, cc = stack.pop()
@@ -90,15 +88,15 @@ def _same_color_components(g: Grid, bg: int) -> List[Tuple[int, Set[Tuple[int, i
                 comps.append((color, comp))
     return comps
 
-def _any_color_components(g: Grid, bg: int) -> List[Set[Tuple[int, int]]]:
+def _any_color_components(g: Grid, bg: int) -> list[set[tuple[int, int]]]:
     """Return list of cell sets for each 4-connected component (any non-bg)."""
     H, W = _sh(g)
     nonbg = {(r, c) for r in range(H) for c in range(W) if g[r][c] != bg}
-    visited: Set[Tuple[int, int]] = set()
+    visited: set[tuple[int, int]] = set()
     comps = []
     for cell in nonbg:
         if cell not in visited:
-            comp: Set[Tuple[int, int]] = set()
+            comp: set[tuple[int, int]] = set()
             stack = [cell]
             while stack:
                 cur = stack.pop()
@@ -131,12 +129,12 @@ class KeepLargestComponentSolver(BaseSolver):
     def name(self) -> str:
         return "KeepLargestComponentSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         comps = _same_color_components(inp, bg)
         if not comps:
             return None
         # Group components by color
-        by_color: Dict[int, List[Set[Tuple[int,int]]]] = {}
+        by_color: dict[int, list[set[tuple[int,int]]]] = {}
         for color, cells in comps:
             by_color.setdefault(color, []).append(cells)
         # Check: at least one color must have multiple components to remove
@@ -149,7 +147,6 @@ class KeepLargestComponentSolver(BaseSolver):
             if len(comp_list) == 1:
                 continue  # only one component — nothing to remove
             largest = max(comp_list, key=len)
-            keep_cells = largest
             for cells in comp_list:
                 if cells is not largest:
                     for (r, c) in cells:
@@ -162,7 +159,7 @@ class KeepLargestComponentSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -201,7 +198,7 @@ class KeepLargestAnyColorSolver(BaseSolver):
     def name(self) -> str:
         return "KeepLargestAnyColorSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         comps = _any_color_components(inp, bg)
         if len(comps) < 2:
             return None
@@ -220,7 +217,7 @@ class KeepLargestAnyColorSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -254,7 +251,7 @@ class KeepLargestAnyColorSolver(BaseSolver):
 @register_solver
 class FloodFillByNeighborColorSolver(BaseSolver):
     """Fill each enclosed bg region with the color of its adjacent non-bg cells.
-    
+
     If a region is adjacent to multiple non-bg colors, use the most common one.
     """
 
@@ -262,7 +259,7 @@ class FloodFillByNeighborColorSolver(BaseSolver):
     def name(self) -> str:
         return "FloodFillByNeighborColorSolver"
 
-    def _get_enclosed_regions(self, g: Grid, bg: int) -> List[Tuple[Set[Tuple[int, int]], int]]:
+    def _get_enclosed_regions(self, g: Grid, bg: int) -> list[tuple[set[tuple[int, int]], int]]:
         """Return list of (enclosed_cells, fill_color) pairs."""
         H, W = _sh(g)
         exterior = _flood_exterior(g, bg)
@@ -273,11 +270,11 @@ class FloodFillByNeighborColorSolver(BaseSolver):
             return []
 
         # Find connected components of enclosed bg
-        visited: Set[Tuple[int, int]] = set()
+        visited: set[tuple[int, int]] = set()
         regions = []
         for cell in enclosed_all:
             if cell not in visited:
-                comp: Set[Tuple[int, int]] = set()
+                comp: set[tuple[int, int]] = set()
                 stack = [cell]
                 while stack:
                     cur = stack.pop()
@@ -301,7 +298,7 @@ class FloodFillByNeighborColorSolver(BaseSolver):
                 regions.append((comp, fill_color))
         return regions
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         regions = self._get_enclosed_regions(inp, bg)
         if not regions:
             return None
@@ -317,7 +314,7 @@ class FloodFillByNeighborColorSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -356,7 +353,7 @@ class LRSymmetryCompleteSolver(BaseSolver):
     def name(self) -> str:
         return "LRSymmetryCompleteSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         changed = False
@@ -385,7 +382,7 @@ class LRSymmetryCompleteSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -424,7 +421,7 @@ class TBSymmetryCompleteSolver(BaseSolver):
     def name(self) -> str:
         return "TBSymmetryCompleteSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         changed = False
@@ -453,7 +450,7 @@ class TBSymmetryCompleteSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -492,7 +489,7 @@ class LRSymmetryRemoveSolver(BaseSolver):
     def name(self) -> str:
         return "LRSymmetryRemoveSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         changed = False
@@ -522,7 +519,7 @@ class LRSymmetryRemoveSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -561,7 +558,7 @@ class TBSymmetryRemoveSolver(BaseSolver):
     def name(self) -> str:
         return "TBSymmetryRemoveSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         changed = False
@@ -588,7 +585,7 @@ class TBSymmetryRemoveSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -622,7 +619,7 @@ class TBSymmetryRemoveSolver(BaseSolver):
 @register_solver
 class ConcentricChebyshevRingSolver(BaseSolver):
     """Scattered non-bg input cells define colors for Chebyshev rings from center.
-    
+
     Input cell at Chebyshev distance d from grid center → output fills every cell
     at Chebyshev distance d with that color. Cells at distance d with no marker
     keep bg color.
@@ -635,10 +632,10 @@ class ConcentricChebyshevRingSolver(BaseSolver):
     def _chebyshev_dist(self, r: int, c: int, cr: float, cc: float) -> int:
         return int(max(abs(r - cr), abs(c - cc)))
 
-    def _learn_ring_map(self, inp: Grid, bg: int) -> Optional[Dict[int, int]]:
+    def _learn_ring_map(self, inp: Grid, bg: int) -> dict[int, int] | None:
         H, W = _sh(inp)
         cr, cc = (H - 1) / 2.0, (W - 1) / 2.0
-        ring_map: Dict[int, int] = {}
+        ring_map: dict[int, int] = {}
         nonbg_rows = []
         for r in range(H):
             for c in range(W):
@@ -659,7 +656,7 @@ class ConcentricChebyshevRingSolver(BaseSolver):
                 return None
         return ring_map
 
-    def _apply(self, inp: Grid, ring_map: Dict[int, int], bg: int) -> Grid:
+    def _apply(self, inp: Grid, ring_map: dict[int, int], bg: int) -> Grid:
         H, W = _sh(inp)
         cr, cc = (H - 1) / 2.0, (W - 1) / 2.0
         out = _clone(inp)
@@ -678,7 +675,7 @@ class ConcentricChebyshevRingSolver(BaseSolver):
         pred = self._apply(inp, ring_map, bg)
         return _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -713,7 +710,7 @@ class ConcentricChebyshevRingSolver(BaseSolver):
 @register_solver
 class DiagonalXSpreadSolver(BaseSolver):
     """Each non-bg cell spreads its color along all 4 diagonals (X pattern).
-    
+
     Output cell (r,c) = color of source cell if |r-sr|==|c-sc| for some source (sr,sc).
     When diagonals of different colors cross, skip (return None).
     """
@@ -722,7 +719,7 @@ class DiagonalXSpreadSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalXSpreadSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         nonbg = [(r, c, inp[r][c]) for r in range(H) for c in range(W) if inp[r][c] != bg]
         if not nonbg:
@@ -752,7 +749,7 @@ class DiagonalXSpreadSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -786,7 +783,7 @@ class DiagonalXSpreadSolver(BaseSolver):
 @register_solver
 class CrossLineFillSolver(BaseSolver):
     """Each non-bg cell fills its entire row AND column.
-    
+
     At the intersection of two different-colored crosses, the color used
     is learned from training (typically a 'new' intersection color like 2).
     If no consistent intersection color can be learned, the first writer wins.
@@ -796,15 +793,15 @@ class CrossLineFillSolver(BaseSolver):
     def name(self) -> str:
         return "CrossLineFillSolver"
 
-    def _apply(self, inp: Grid, bg: int, intersect_color: Optional[int] = None) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int, intersect_color: int | None = None) -> Grid | None:
         H, W = _sh(inp)
         nonbg = [(r, c, inp[r][c]) for r in range(H) for c in range(W) if inp[r][c] != bg]
         if not nonbg or len(nonbg) < 2:
             return None
 
         # Build row_color and col_color maps
-        row_color: Dict[int, int] = {}
-        col_color: Dict[int, int] = {}
+        row_color: dict[int, int] = {}
+        col_color: dict[int, int] = {}
         for sr, sc, color in nonbg:
             if sr in row_color and row_color[sr] != color:
                 return None  # two different colors in same row
@@ -831,18 +828,18 @@ class CrossLineFillSolver(BaseSolver):
                 # else: stays bg
         return out
 
-    def _learn_intersect_color(self, train: list, bg: int) -> Optional[int]:
+    def _learn_intersect_color(self, train: list, bg: int) -> int | None:
         """Learn what color appears at cross-intersections of different-colored crosses."""
         colors_at_intersections: Counter = Counter()
         for p in train:
             inp, out = p['input'], p['output']
             H, W = _sh(inp)
             nonbg = [(r, c, inp[r][c]) for r in range(H) for c in range(W) if inp[r][c] != bg]
-            row_color = {r: col for r, c, col in nonbg}
-            col_color = {c: col for r, c, col in nonbg}
+            {r: col for r, c, col in nonbg}
+            {c: col for r, c, col in nonbg}
             # Check conflicts
-            rc_map: Dict[int, int] = {}
-            cc_map: Dict[int, int] = {}
+            rc_map: dict[int, int] = {}
+            cc_map: dict[int, int] = {}
             valid = True
             for r, c, color in nonbg:
                 if r in rc_map and rc_map[r] != color:
@@ -865,13 +862,13 @@ class CrossLineFillSolver(BaseSolver):
             return None
         return colors_at_intersections.most_common(1)[0][0]
 
-    def _verify(self, inp: Grid, out: Grid, bg: int, intersect_color: Optional[int]) -> bool:
+    def _verify(self, inp: Grid, out: Grid, bg: int, intersect_color: int | None) -> bool:
         if not _same_shape(inp, out):
             return False
         pred = self._apply(inp, bg, intersect_color)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -909,7 +906,7 @@ class CrossLineFillSolver(BaseSolver):
 @register_solver
 class RowColSingleLineSolver(BaseSolver):
     """Each non-bg cell fills either its full row OR its full column (not both).
-    
+
     Direction (row vs col) is learned per training pair: whichever assignment
     of 'row' or 'col' to each input cell matches the output is kept.
     """
@@ -919,8 +916,8 @@ class RowColSingleLineSolver(BaseSolver):
         return "RowColSingleLineSolver"
 
     def _apply_assignment(self, inp: Grid, bg: int,
-                           row_cells: Set[Tuple[int, int]],
-                           col_cells: Set[Tuple[int, int]]) -> Optional[Grid]:
+                           row_cells: set[tuple[int, int]],
+                           col_cells: set[tuple[int, int]]) -> Grid | None:
         H, W = _sh(inp)
         out = [[bg] * W for _ in range(H)]
         # Fill rows
@@ -943,7 +940,7 @@ class RowColSingleLineSolver(BaseSolver):
                     return None
         return out
 
-    def _learn_directions(self, train: list, bg: int) -> Optional[Tuple[Set[int], Set[int]]]:
+    def _learn_directions(self, train: list, bg: int) -> tuple[set[int], set[int]] | None:
         """Return (row_colors, col_colors) that are consistent across all pairs."""
         # Each pair has a set of non-bg cells; try all assignments for first pair
         # then check consistency across other pairs
@@ -958,13 +955,13 @@ class RowColSingleLineSolver(BaseSolver):
             return None
 
         # Group by color: same color cells share same direction
-        color_cells: Dict[int, List[Tuple[int, int]]] = {}
+        color_cells: dict[int, list[tuple[int, int]]] = {}
         for r, c, color in nonbg0:
             color_cells.setdefault(color, []).append((r, c))
 
         # Each color gets either 'row' or 'col' direction
         # Try to determine from first pair
-        color_dirs: Dict[int, str] = {}
+        color_dirs: dict[int, str] = {}
         for color, cells in color_cells.items():
             # Check what the output shows for these cells
             # If all their rows are fully filled with this color → 'row'
@@ -1010,7 +1007,7 @@ class RowColSingleLineSolver(BaseSolver):
         col_colors = {c for c, d in color_dirs.items() if d == 'col'}
         return row_colors, col_colors
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -1032,8 +1029,8 @@ class RowColSingleLineSolver(BaseSolver):
         for ti in ctx.test_inputs:
             H, W = _sh(ti)
             nonbg = [(r, c, ti[r][c]) for r in range(H) for c in range(W) if ti[r][c] != bg]
-            row_cells: Set[Tuple[int, int]] = set()
-            col_cells: Set[Tuple[int, int]] = set()
+            row_cells: set[tuple[int, int]] = set()
+            col_cells: set[tuple[int, int]] = set()
             for r, c, color in nonbg:
                 if color in row_colors:
                     row_cells.add((r, c))
@@ -1063,7 +1060,7 @@ class RemoveMinorityColorSolver(BaseSolver):
     def name(self) -> str:
         return "RemoveMinorityColorSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         nonbg_counts: Counter = Counter()
         for r in range(H):
@@ -1086,7 +1083,7 @@ class RemoveMinorityColorSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -1125,7 +1122,7 @@ class ExpandObjectBy1Solver(BaseSolver):
     def name(self) -> str:
         return "ExpandObjectBy1Solver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         for r in range(H):
@@ -1147,7 +1144,7 @@ class ExpandObjectBy1Solver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -1202,7 +1199,7 @@ class ExpandObjectByNSolver(BaseSolver):
             cur = nxt
         return cur
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -1254,7 +1251,7 @@ class RemoveSmallestComponentSolver(BaseSolver):
     def name(self) -> str:
         return "RemoveSmallestComponentSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         comps = _same_color_components(inp, bg)
         if len(comps) < 2:
             return None
@@ -1275,7 +1272,7 @@ class RemoveSmallestComponentSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -1314,7 +1311,7 @@ class RotationalSymmetryCompleteSolver(BaseSolver):
     def name(self) -> str:
         return "RotationalSymmetryCompleteSolver"
 
-    def _apply(self, inp: Grid, bg: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int) -> Grid | None:
         H, W = _sh(inp)
         out = _clone(inp)
         changed = False
@@ -1346,7 +1343,7 @@ class RotationalSymmetryCompleteSolver(BaseSolver):
         pred = self._apply(inp, bg)
         return pred is not None and _grids_equal(pred, out)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None

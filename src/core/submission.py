@@ -11,6 +11,11 @@ from .interfaces import SolverResult, TaskContext
 logger = logging.getLogger(__name__)
 
 
+def _plain_grid(grid) -> list[list[int]]:
+    """Convert any grid (lists, tuples or numpy arrays) to a JSON-safe list of int lists."""
+    return [[int(v) for v in row] for row in grid]
+
+
 def build_submission(
     tasks: dict[str, TaskContext],
     results: dict[str, SolverResult],
@@ -50,7 +55,7 @@ def build_submission(
                 a1 = [[0]]
                 a2 = [[0]]
 
-            task_preds.append({"attempt_1": a1, "attempt_2": a2})
+            task_preds.append({"attempt_1": _plain_grid(a1), "attempt_2": _plain_grid(a2)})
 
         submission[task_id] = task_preds
 

@@ -8,13 +8,10 @@ advanced_solvers13.py — 4 new solvers from deep crop-task analysis
 """
 
 from collections import Counter, deque
-from typing import List, Optional
 
-from src.core.interfaces import (
-    BaseSolver, TaskContext, SolverResult, Prediction, Grid
-)
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -109,7 +106,7 @@ def _non_zero_colors(grid: Grid):
     return list(seen)
 
 
-def _make_result(ctx: TaskContext, preds: List[Grid]) -> SolverResult:
+def _make_result(ctx: TaskContext, preds: list[Grid]) -> SolverResult:
     predictions = [
         Prediction(attempt_1=p, attempt_2=p, solver_name=ctx.task_id)
         for p in preds
@@ -134,7 +131,7 @@ class SymmetricQuadrantCropSolver(BaseSolver):
     def name(self) -> str:
         return "SymmetricQuadrantCropSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -144,7 +141,7 @@ class SymmetricQuadrantCropSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         bb = _bbox_of_nonzero(grid)
         if bb is None: return None
         r0, c0, r1, c1 = bb
@@ -170,7 +167,7 @@ class OddOneOutFillSolver(BaseSolver):
     def name(self) -> str:
         return "OddOneOutFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -180,7 +177,7 @@ class OddOneOutFillSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         colors = _non_zero_colors(grid)
         for col in colors:
             comps = _components_4(grid, col)
@@ -220,7 +217,7 @@ class MostClustersColorSolver(BaseSolver):
     def name(self) -> str:
         return "MostClustersColorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -230,7 +227,7 @@ class MostClustersColorSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         colors = _non_zero_colors(grid)
         best_n = 1  # require at least 2 clusters
         best_bboxes = None
@@ -266,7 +263,7 @@ class MarkerNearestClusterSolver(BaseSolver):
     def name(self) -> str:
         return "MarkerNearestClusterSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = self._predict(pair["input"])
             if pred is None or pred != pair["output"]:
@@ -276,7 +273,7 @@ class MarkerNearestClusterSolver(BaseSolver):
             return None
         return _make_result(ctx, preds)
 
-    def _predict(self, grid: Grid) -> Optional[Grid]:
+    def _predict(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         # Locate marker
         marker = None

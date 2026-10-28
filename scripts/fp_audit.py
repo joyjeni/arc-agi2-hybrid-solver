@@ -5,14 +5,17 @@ For every solver, tries it on every training task.
 Reports: solved, wrong (false positives), skipped (not attempted).
 """
 from __future__ import annotations
-import sys, json, re as _re
+
+import json
+import re as _re
+import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.solvers import REGISTRY
 from src.pipeline import load_challenges, load_solutions
+from src.solvers import REGISTRY
 
 # ── data ────────────────────────────────────────────────────────────────────
 challenges = load_challenges(str(ROOT / "data/arc-agi_training_challenges.json"))

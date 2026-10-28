@@ -22,12 +22,11 @@ Solvers:
 """
 
 from __future__ import annotations
-from typing import List, Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
+from src.core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ---------------------------------------------------------------------------
@@ -79,7 +78,7 @@ def _arm_from_five(grid: Grid, r5: int, c5: int):
     return None, []
 
 
-def _five_corner_transform(grid: Grid) -> Optional[Grid]:
+def _five_corner_transform(grid: Grid) -> Grid | None:
     H, W = len(grid), len(grid[0])
     # Find the single 5 cell
     fives = [(r, c) for r in range(H) for c in range(W) if grid[r][c] == 5]
@@ -126,7 +125,7 @@ class FiveCornerArmRecolorSolver(BaseSolver):
     def name(self) -> str:
         return "FiveCornerArmRecolorSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Validate on all training pairs
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
@@ -164,7 +163,7 @@ _SLIDE_BG = 8
 _SLIDE_COLORS = frozenset(_SLIDE_DIR)
 
 
-def _color_direction_slide(grid: Grid) -> Optional[Grid]:
+def _color_direction_slide(grid: Grid) -> Grid | None:
     H, W = len(grid), len(grid[0])
     # Background must be 8; non-bg cells only from {1,2,7,9}
     non_bg = {grid[r][c] for r in range(H) for c in range(W) if grid[r][c] != _SLIDE_BG}
@@ -196,7 +195,7 @@ class ColorDirectionSlideSolver(BaseSolver):
     def name(self) -> str:
         return "ColorDirectionSlideSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -227,13 +226,13 @@ class ColorDirectionSlideSolver(BaseSolver):
 # 3. FiveMarkerRunFillSolver  (e048c9ed)
 # ---------------------------------------------------------------------------
 
-def _find_fill_col(row: List[int]) -> Optional[int]:
+def _find_fill_col(row: list[int]) -> int | None:
     """Return column index of the single 5 in the row, or None."""
     fives = [c for c, v in enumerate(row) if v == 5]
     return fives[0] if len(fives) == 1 else None
 
 
-def _row_run_len(row: List[int], fill_col: int) -> int:
+def _row_run_len(row: list[int], fill_col: int) -> int:
     """
     Count contiguous non-zero cells in a row, ignoring fill_col.
     5s in data rows are treated as ordinary color values.
@@ -251,7 +250,7 @@ def _row_run_len(row: List[int], fill_col: int) -> int:
     return len(cols)
 
 
-def _five_marker_run_fill(grid: Grid) -> Optional[Grid]:
+def _five_marker_run_fill(grid: Grid) -> Grid | None:
     H, W = len(grid), len(grid[0])
     fill_col = _find_fill_col(grid[0])
     if fill_col is None:
@@ -287,7 +286,7 @@ class FiveMarkerRunFillSolver(BaseSolver):
     def name(self) -> str:
         return "FiveMarkerRunFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Allow at most 1 mismatched cell across all training pairs
         # (known anomaly: run_len=5 with color 7 yields 9 not 6 in one training grid)
         total_mismatches = 0
@@ -333,7 +332,7 @@ class FiveMarkerRunFillSolver(BaseSolver):
 # 4. AdjacentThreeTwoEraseSolver  (d90796e8)
 # ---------------------------------------------------------------------------
 
-def _adjacent_three_two_erase(grid: Grid) -> Optional[Grid]:
+def _adjacent_three_two_erase(grid: Grid) -> Grid | None:
     H, W = len(grid), len(grid[0])
     # Allowed cell values: 0, 2, 3, 5
     vals = {grid[r][c] for r in range(H) for c in range(W)}
@@ -377,7 +376,7 @@ class AdjacentThreeTwoEraseSolver(BaseSolver):
     def name(self) -> str:
         return "AdjacentThreeTwoEraseSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]

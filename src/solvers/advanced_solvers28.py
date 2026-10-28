@@ -10,9 +10,8 @@ advanced_solvers28.py — Six solvers for ARC-AGI-2
 """
 
 from collections import Counter
-from typing import List, Optional, Tuple
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -43,7 +42,7 @@ class DiagonalBounceSolver(BaseSolver):
     def name(self) -> str:
         return "DiagonalBounceSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
         bg = 8
 
@@ -77,7 +76,7 @@ class DiagonalBounceSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -114,7 +113,7 @@ class PerimeterFillSolver(BaseSolver):
     def name(self) -> str:
         return "PerimeterFillSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         nz = [(r, c, inp[r][c]) for r in range(rows) for c in range(cols) if inp[r][c] != 0]
@@ -130,7 +129,7 @@ class PerimeterFillSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -171,7 +170,7 @@ class CrossArmsCondenserSolver(BaseSolver):
     def name(self) -> str:
         return "CrossArmsCondenserSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         color_count = Counter(
@@ -234,7 +233,7 @@ class CrossArmsCondenserSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -350,7 +349,7 @@ class LPathFillSolver(BaseSolver):
     def name(self) -> str:
         return "LPathFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -399,7 +398,7 @@ class FractalStairSolver(BaseSolver):
     def name(self) -> str:
         return "FractalStairSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
 
         anchor = None
@@ -464,7 +463,7 @@ class FractalStairSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None
@@ -504,7 +503,7 @@ class SelfTilingSolver(BaseSolver):
     def name(self) -> str:
         return "SelfTilingSolver"
 
-    def _apply(self, inp: Grid) -> Optional[Grid]:
+    def _apply(self, inp: Grid) -> Grid | None:
         rows, cols = len(inp), len(inp[0])
         if rows != 9 or cols != 9:
             return None
@@ -539,7 +538,7 @@ class SelfTilingSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train = ctx.train_pairs
         if not train:
             return None

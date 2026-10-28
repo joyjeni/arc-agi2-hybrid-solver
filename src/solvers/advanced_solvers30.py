@@ -7,10 +7,9 @@ advanced_solvers30.py — Four solvers for ARC-AGI-2
 4. UniqueColorRingTwoSolver  (task 31aa019c) — ring of 2s around unique-once color cell
 """
 
-from typing import List, Optional, Tuple
 from collections import deque
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -45,7 +44,7 @@ def _verify_exact(pred: Grid, expected: Grid) -> bool:
 #   left/right cols all 1s, top row has 1s at left & right with exactly one
 #   0 inside.
 
-def _find_all_frames(grid: Grid) -> List[Tuple[int, int, int, int, int]]:
+def _find_all_frames(grid: Grid) -> list[tuple[int, int, int, int, int]]:
     """Return list of (top, bottom, left, right, gap_col) for all frames in grid."""
     H = len(grid)
     W = len(grid[0])
@@ -82,7 +81,7 @@ def _find_all_frames(grid: Grid) -> List[Tuple[int, int, int, int, int]]:
     return frames
 
 
-def _apply_frame_fill(result: Grid, grid: Grid, frame: Tuple) -> bool:
+def _apply_frame_fill(result: Grid, grid: Grid, frame: tuple) -> bool:
     """Apply fill for a single frame. Returns False if no seed found."""
     top, bottom, left, right, gap_col = frame
 
@@ -98,7 +97,7 @@ def _apply_frame_fill(result: Grid, grid: Grid, frame: Tuple) -> bool:
     if seed_count != 1 or seed_color is None:
         return False
 
-    H = len(grid)
+    len(grid)
 
     # Fill interior
     for r in range(top + 1, bottom):
@@ -117,7 +116,7 @@ def _apply_frame_fill(result: Grid, grid: Grid, frame: Tuple) -> bool:
     return True
 
 
-def _solve_frame_seed_fill(grid: Grid) -> Optional[Grid]:
+def _solve_frame_seed_fill(grid: Grid) -> Grid | None:
     frames = _find_all_frames(grid)
     if not frames:
         return None
@@ -140,7 +139,7 @@ class FrameSeedFillSolver(BaseSolver):
     def name(self) -> str:
         return "FrameSeedFillSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_frame_seed_fill(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):
@@ -174,7 +173,7 @@ class FrameSeedFillSolver(BaseSolver):
 #   Remove blob from original position (replace with 7).
 
 def _flood_fill_connected(grid: Grid, start_r: int, start_c: int,
-                           match_colors: set) -> List[Tuple[int, int]]:
+                           match_colors: set) -> list[tuple[int, int]]:
     """BFS flood fill from start, collecting cells whose color is in match_colors."""
     H, W = len(grid), len(grid[0])
     visited = set()
@@ -193,7 +192,7 @@ def _flood_fill_connected(grid: Grid, start_r: int, start_c: int,
     return list(visited)
 
 
-def _solve_stray_blob_fill_frame(grid: Grid) -> Optional[Grid]:
+def _solve_stray_blob_fill_frame(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
     BG = 7
@@ -201,8 +200,8 @@ def _solve_stray_blob_fill_frame(grid: Grid) -> Optional[Grid]:
 
     # Find frame: closed rectangle of 6s
     # Detect by finding top/bottom rows and left/right cols of 6s
-    six_rows = [r for r in range(H) if all(grid[r][c] == BORDER for c in range(W))]
-    six_cols = [c for c in range(W) if all(grid[r][c] == BORDER for r in range(H))]
+    [r for r in range(H) if all(grid[r][c] == BORDER for c in range(W))]
+    [c for c in range(W) if all(grid[r][c] == BORDER for r in range(H))]
 
     # Frame: top row, bottom row, left col, right col (partial — just border cells)
     # Find bounding rectangle of all 6-cells
@@ -334,7 +333,7 @@ class StrayBlobFillFrameSolver(BaseSolver):
     def name(self) -> str:
         return "StrayBlobFillFrameSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_stray_blob_fill_frame(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):
@@ -368,7 +367,7 @@ class StrayBlobFillFrameSolver(BaseSolver):
 #   5. Output = all 3s, place original main-color cells + reflected copies.
 #      Color-2 cells are NOT placed in output.
 
-def _solve_reflect_across_color_two(grid: Grid) -> Optional[Grid]:
+def _solve_reflect_across_color_two(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
 
@@ -453,7 +452,7 @@ class ReflectAcrossColorTwoSolver(BaseSolver):
     def name(self) -> str:
         return "ReflectAcrossColorTwoSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_reflect_across_color_two(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):
@@ -482,7 +481,7 @@ class ReflectAcrossColorTwoSolver(BaseSolver):
 #      which keeps its original color.
 #   Boundary check: if ring goes out of bounds → return None.
 
-def _solve_unique_color_ring_two(grid: Grid) -> Optional[Grid]:
+def _solve_unique_color_ring_two(grid: Grid) -> Grid | None:
     H = len(grid)
     W = len(grid[0])
 
@@ -532,7 +531,7 @@ class UniqueColorRingTwoSolver(BaseSolver):
     def name(self) -> str:
         return "UniqueColorRingTwoSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             pred = _solve_unique_color_ring_two(pair["input"])
             if pred is None or not _verify_exact(pred, pair["output"]):

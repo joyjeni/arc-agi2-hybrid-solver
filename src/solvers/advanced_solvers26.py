@@ -7,11 +7,10 @@ advanced_solvers26.py — Four new solvers for ARC-AGI-2
 4. RingToCrossReplaceSolver  (task: 6c434453)
 """
 
-from collections import Counter, deque
-from typing import List, Optional
 import math
+from collections import Counter, deque
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
 
@@ -49,7 +48,7 @@ class QuadrantFillSolver(BaseSolver):
             return None, None
         return bg, out_colors.pop()
 
-    def _apply(self, inp: Grid, bg: int, fill_val: int) -> Optional[Grid]:
+    def _apply(self, inp: Grid, bg: int, fill_val: int) -> Grid | None:
         pos = [(r, c) for r in range(4) for c in range(4) if inp[r][c] == fill_val]
         if len(pos) != 1:
             return None
@@ -57,7 +56,7 @@ class QuadrantFillSolver(BaseSolver):
         return [[fill_val if (r // 2 == qr and c // 2 == qc) else bg
                  for c in range(4)] for r in range(4)]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Must be 4×4 everywhere
         all_grids = ([p["input"] for p in ctx.train_pairs] +
                      [p["output"] for p in ctx.train_pairs] +
@@ -105,7 +104,7 @@ class CornerTriangleCWSolver(BaseSolver):
     def name(self) -> str:
         return "CornerTriangleCWSolver"
 
-    def _regions(self, grid: Grid) -> List:
+    def _regions(self, grid: Grid) -> list:
         H, W = len(grid), len(grid[0])
         vis: set = set()
         regs = []
@@ -136,7 +135,7 @@ class CornerTriangleCWSolver(BaseSolver):
                     regs.append((col, cells, cr_avg, cc_avg))
         return regs
 
-    def _rotate(self, grid: Grid) -> Optional[Grid]:
+    def _rotate(self, grid: Grid) -> Grid | None:
         H, W = len(grid), len(grid[0])
         cr, cc = (H - 1) / 2.0, (W - 1) / 2.0
         regs = self._regions(grid)
@@ -152,7 +151,7 @@ class CornerTriangleCWSolver(BaseSolver):
                 out[r][c] = new_col
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         all_grids = ([g for p in ctx.train_pairs for g in (p["input"], p["output"])] +
                      ctx.test_inputs)
         if any(len(g) != 8 or any(len(r) != 8 for r in g) for g in all_grids):
@@ -197,7 +196,7 @@ class RectangleFillByAreaSolver(BaseSolver):
     def name(self) -> str:
         return "RectangleFillByAreaSolver"
 
-    def _find_rects(self, grid: Grid) -> List:
+    def _find_rects(self, grid: Grid) -> list:
         H, W = len(grid), len(grid[0])
         vis: set = set()
         rects = []
@@ -222,7 +221,7 @@ class RectangleFillByAreaSolver(BaseSolver):
                 rects.append((r0, r1, c0, c1))
         return rects
 
-    def _apply(self, grid: Grid, rects: List) -> Grid:
+    def _apply(self, grid: Grid, rects: list) -> Grid:
         out = [list(row) for row in grid]
         areas = [(r1 - r0 + 1) * (c1 - c0 + 1) for r0, r1, c0, c1 in rects]
         for rank, (_, (r0, r1, c0, c1)) in enumerate(sorted(zip(areas, rects)), 1):
@@ -231,7 +230,7 @@ class RectangleFillByAreaSolver(BaseSolver):
                     out[r][c] = rank
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for p in ctx.train_pairs:
             inp = p["input"]
             if not {v for row in inp for v in row}.issubset({0, 4}):
@@ -294,7 +293,7 @@ class RingToCrossReplaceSolver(BaseSolver):
                 out[r + dr][c + dc] = self.CROSS
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for p in ctx.train_pairs:
             inp = p["input"]
             if not {v for row in inp for v in row}.issubset({0, 1}):

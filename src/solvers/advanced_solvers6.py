@@ -8,12 +8,12 @@ bottommost row touches row H-2.
 """
 from __future__ import annotations
 
-import numpy as np
 from collections import Counter
-from typing import Optional
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+import numpy as np
+
 from ..core.grid_codec import background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -56,7 +56,7 @@ def _find_components_8conn(grid: np.ndarray, color: int) -> list[list[tuple[int,
     return components
 
 
-def _apply_border_gravity(inp: np.ndarray, bg: int, A: int, B: int) -> Optional[np.ndarray]:
+def _apply_border_gravity(inp: np.ndarray, bg: int, A: int, B: int) -> np.ndarray | None:
     """Apply border-gravity rule and return output grid, or None if invalid."""
     H, W = inp.shape
     # validate borders
@@ -126,7 +126,7 @@ class BorderGravitySortSolver(BaseSolver):
     def name(self) -> str:
         return "BorderGravitySortSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # --- verify all train pairs ---
         for pair in ctx.train_pairs:
             inp = _np(pair['input'])
@@ -179,7 +179,7 @@ class ColumnGravitySortSolver(BaseSolver):
     def name(self) -> str:
         return "ColumnGravitySortSolver"
 
-    def _apply(self, inp: np.ndarray, bg: int, A: int, B: int) -> Optional[np.ndarray]:
+    def _apply(self, inp: np.ndarray, bg: int, A: int, B: int) -> np.ndarray | None:
         H, W = inp.shape
         if not all(inp[0, c] == A for c in range(W)):
             return None
@@ -203,7 +203,7 @@ class ColumnGravitySortSolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = _np(pair['input'])
             out_e = _np(pair['output'])
@@ -249,7 +249,7 @@ class SingleBorderGravitySolver(BaseSolver):
     def name(self) -> str:
         return "SingleBorderGravitySolver"
 
-    def _apply(self, inp: np.ndarray) -> Optional[np.ndarray]:
+    def _apply(self, inp: np.ndarray) -> np.ndarray | None:
         H, W = inp.shape
         bg = background_color(inp.tolist())
         # Detect top border
@@ -295,7 +295,7 @@ class SingleBorderGravitySolver(BaseSolver):
 
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = _np(pair['input'])
             out_e = _np(pair['output'])

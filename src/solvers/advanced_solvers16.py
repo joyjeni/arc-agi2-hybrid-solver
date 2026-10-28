@@ -8,9 +8,9 @@ advanced_solvers16.py — 4 pattern solvers
 
 from collections import deque
 from math import sqrt
-from typing import List, Tuple, Dict, Set
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -20,19 +20,19 @@ from .registry import register_solver
 def _copy_grid(g: Grid) -> Grid:
     return [list(row) for row in g]
 
-def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
+def _make_result(grids: list[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
-def _bfs_components_color(grid: Grid, color: int) -> List[List[Tuple[int, int]]]:
+def _bfs_components_color(grid: Grid, color: int) -> list[list[tuple[int, int]]]:
     """Return list of connected components (4-connected) for cells with the given color."""
     rows, cols = len(grid), len(grid[0])
-    visited: Set[Tuple[int, int]] = set()
-    components: List[List[Tuple[int, int]]] = []
+    visited: set[tuple[int, int]] = set()
+    components: list[list[tuple[int, int]]] = []
     for r in range(rows):
         for c in range(cols):
             if grid[r][c] == color and (r, c) not in visited:
-                comp: List[Tuple[int, int]] = []
+                comp: list[tuple[int, int]] = []
                 q = deque([(r, c)])
                 visited.add((r, c))
                 while q:
@@ -46,7 +46,7 @@ def _bfs_components_color(grid: Grid, color: int) -> List[List[Tuple[int, int]]]
                 components.append(comp)
     return components
 
-def _all_colors(grid: Grid) -> Set[int]:
+def _all_colors(grid: Grid) -> set[int]:
     return {cell for row in grid for cell in row}
 
 def _verify_exact(out: Grid, expected: Grid) -> bool:
@@ -137,11 +137,11 @@ def _apply_nearest_pixel_to_five_block(grid: Grid) -> Grid:
     """
     rows, cols = len(grid), len(grid[0])
 
-    five_cells: List[Tuple[int, int]] = [
+    five_cells: list[tuple[int, int]] = [
         (r, c) for r in range(rows) for c in range(cols) if grid[r][c] == 5
     ]
 
-    markers: List[Tuple[int, int, int]] = []  # (r, c, color)
+    markers: list[tuple[int, int, int]] = []  # (r, c, color)
     marker_colors = _all_colors(grid) - {0, 5}
     for mc in marker_colors:
         comps = _bfs_components_color(grid, mc)
@@ -336,7 +336,7 @@ def _apply_raycast_block_edge(grid: Grid) -> Grid:
     top, bottom, left, right = bbox
 
     marker_colors = _all_colors(grid) - {0, 8}
-    markers: List[Tuple[int, int, int]] = []
+    markers: list[tuple[int, int, int]] = []
     for mc in marker_colors:
         comps = _bfs_components_color(grid, mc)
         for comp in comps:

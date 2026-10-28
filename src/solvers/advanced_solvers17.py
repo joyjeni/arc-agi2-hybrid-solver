@@ -7,9 +7,9 @@ advanced_solvers17.py — 4 pattern solvers
 """
 
 from collections import deque
-from typing import List, Tuple, Set
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction, Grid
+from src.core.interfaces import BaseSolver, Grid, Prediction, SolverResult, TaskContext
+
 from .registry import register_solver
 
 # ---------------------------------------------------------------------------
@@ -19,11 +19,11 @@ from .registry import register_solver
 def _copy_grid(g: Grid) -> Grid:
     return [list(row) for row in g]
 
-def _make_result(grids: List[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
+def _make_result(grids: list[Grid], ctx: TaskContext, solver_name: str) -> SolverResult:
     preds = [Prediction(attempt_1=g, attempt_2=g, solver_name=solver_name) for g in grids]
     return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
-def _all_colors(grid: Grid) -> Set[int]:
+def _all_colors(grid: Grid) -> set[int]:
     return {cell for row in grid for cell in row}
 
 def _verify_exact(out: Grid, expected: Grid) -> bool:
@@ -34,15 +34,15 @@ def _verify_exact(out: Grid, expected: Grid) -> bool:
             return False
     return True
 
-def _bfs_components_color(grid: Grid, color: int) -> List[List[Tuple[int, int]]]:
+def _bfs_components_color(grid: Grid, color: int) -> list[list[tuple[int, int]]]:
     """Return list of 4-connected components for cells with the given color."""
     rows, cols = len(grid), len(grid[0])
-    visited: Set[Tuple[int, int]] = set()
-    components: List[List[Tuple[int, int]]] = []
+    visited: set[tuple[int, int]] = set()
+    components: list[list[tuple[int, int]]] = []
     for r in range(rows):
         for c in range(cols):
             if grid[r][c] == color and (r, c) not in visited:
-                comp: List[Tuple[int, int]] = []
+                comp: list[tuple[int, int]] = []
                 q = deque([(r, c)])
                 visited.add((r, c))
                 while q:
@@ -258,7 +258,7 @@ class SixFrameBorderFillSolver(BaseSolver):
 # 3. QuadrantPaintBlockSolver  (task 639f5a19)
 # ---------------------------------------------------------------------------
 
-def _find_solid_8_blocks(grid: Grid) -> List[Tuple[int, int, int, int]]:
+def _find_solid_8_blocks(grid: Grid) -> list[tuple[int, int, int, int]]:
     """Return (r0, r1, c0, c1) for each solid all-8 rectangular region."""
     comps = _bfs_components_color(grid, 8)
     blocks = []
@@ -284,7 +284,7 @@ def _apply_quadrant_paint(grid: Grid) -> Grid:
       half_h ≤ lr < bh-2:  2 if lc<bdr else (3 if lc≥bw-bdr else 4)
       lr ≥ bh-2:            2 if lc < bw//2 else 3
     """
-    rows, cols = len(grid), len(grid[0])
+    _rows, _cols = len(grid), len(grid[0])
     result = _copy_grid(grid)
     blocks = _find_solid_8_blocks(grid)
 
@@ -389,7 +389,7 @@ def _apply_six_block_wave_expand(grid: Grid) -> Grid:
     sr0 = min(r for r, c in six_cells)
 
     # Detect strips: maximal contiguous runs of rows where at least one cell is non-zero
-    strips: List[Tuple[int, int]] = []
+    strips: list[tuple[int, int]] = []
     i = 0
     while i < rows:
         if any(grid[i][c] != 0 for c in range(cols)):

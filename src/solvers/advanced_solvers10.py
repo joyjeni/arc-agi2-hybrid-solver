@@ -8,15 +8,15 @@ Solvers:
 """
 from __future__ import annotations
 
-import numpy as np
 from collections import deque
-from typing import List, Tuple, Optional, Dict, Set
 
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+import numpy as np
+
 from ..core.grid_codec import background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ---------------------------------------------------------------------------
@@ -27,7 +27,7 @@ def _bg(grid: Grid) -> int:
     return background_color(grid)
 
 
-def _find_ccs(grid: Grid, ignore_color: int) -> List[Set[Tuple[int, int]]]:
+def _find_ccs(grid: Grid, ignore_color: int) -> list[set[tuple[int, int]]]:
     """Return list of connected components (4-connected) ignoring `ignore_color`."""
     rows, cols = len(grid), len(grid[0])
     visited = set()
@@ -52,7 +52,7 @@ def _find_ccs(grid: Grid, ignore_color: int) -> List[Set[Tuple[int, int]]]:
     return components
 
 
-def _bbox(cells: Set[Tuple[int, int]]) -> Tuple[int, int, int, int]:
+def _bbox(cells: set[tuple[int, int]]) -> tuple[int, int, int, int]:
     """Return (rmin, rmax, cmin, cmax) inclusive."""
     rows = [r for r, c in cells]
     cols = [c for r, c in cells]
@@ -73,7 +73,7 @@ class BBoxCCFillSolver(BaseSolver):
 
     name = "BBoxCCFillSolver"
 
-    def _learn_fill_color(self, inp: Grid, out: Grid, bg: int) -> Optional[int]:
+    def _learn_fill_color(self, inp: Grid, out: Grid, bg: int) -> int | None:
         """Infer fill color: color present in out that is NOT in inp."""
         inp_colors = {inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))}
         out_colors = {out[r][c] for r in range(len(out)) for c in range(len(out[0]))}
@@ -118,7 +118,7 @@ class BBoxCCFillSolver(BaseSolver):
         pred = self._apply(inp, fill_color)
         return pred == expected
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
         bg = _bg(ctx.train_pairs[0]['input'])
@@ -163,7 +163,7 @@ class HollowRectFillSolver(BaseSolver):
 
     name = "HollowRectFillSolver"
 
-    def _find_hollow_rects(self, grid: Grid, bg: int) -> List[Tuple[int,int,int,int,int]]:
+    def _find_hollow_rects(self, grid: Grid, bg: int) -> list[tuple[int,int,int,int,int]]:
         """Find all hollow rects via per-CC detection. Returns list of (r0,r1,c0,c1,frame_color)."""
         results = []
         ccs = _find_ccs(grid, bg)
@@ -185,10 +185,10 @@ class HollowRectFillSolver(BaseSolver):
                 results.append((r0, r1, c0, c1, color))
         return results
 
-    def _interior_cells(self, r0: int, r1: int, c0: int, c1: int) -> List[Tuple[int,int]]:
+    def _interior_cells(self, r0: int, r1: int, c0: int, c1: int) -> list[tuple[int,int]]:
         return [(r, c) for r in range(r0+1, r1) for c in range(c0+1, c1)]
 
-    def _learn_colors(self, inp: Grid, out: Grid) -> Optional[Tuple[int,int]]:
+    def _learn_colors(self, inp: Grid, out: Grid) -> tuple[int, int] | None:
         """Learn color_A (1-cell interior) and color_B (2+-cell interior)."""
         inp = np.asarray(inp)
         out = np.asarray(out)
@@ -208,7 +208,7 @@ class HollowRectFillSolver(BaseSolver):
             fill_colors = {out[r][c] for r, c in interior}
             if len(fill_colors) != 1:
                 return None
-            fc = next(iter(fill_colors))
+            fc = int(next(iter(fill_colors)))
             if fc == bg:
                 return None
             if len(interior) == 1:
@@ -226,7 +226,7 @@ class HollowRectFillSolver(BaseSolver):
             return None
         return (color_a, color_b)
 
-    def _apply(self, inp: Grid, color_a: Optional[int], color_b: Optional[int]) -> Grid:
+    def _apply(self, inp: Grid, color_a: int | None, color_b: int | None) -> Grid:
         bg = _bg(inp)
         out = [row[:] for row in inp]
         rects = self._find_hollow_rects(inp, bg)
@@ -245,7 +245,7 @@ class HollowRectFillSolver(BaseSolver):
         pred = self._apply(inp, color_a, color_b)
         return np.array_equal(pred, expected)
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 
@@ -305,7 +305,7 @@ class AxisIntersectionFillSolver(BaseSolver):
 
     name = "AxisIntersectionFillSolver"
 
-    def _detect_axis(self, grid: Grid) -> Optional[Tuple[int, Set[int], int, Set[int], int]]:
+    def _detect_axis(self, grid: Grid) -> tuple[int, set[int], int, set[int], int] | None:
         """Detect (marker_color, axis_row, col_set, axis_col, row_set).
 
         Returns None if grid doesn't match the pattern.
@@ -316,7 +316,7 @@ class AxisIntersectionFillSolver(BaseSolver):
         rows, cols = len(grid), len(grid[0])
 
         # Find all non-bg colors
-        color_cells: Dict[int, List[Tuple[int,int]]] = {}
+        color_cells: dict[int, list[tuple[int,int]]] = {}
         for r in range(rows):
             for c in range(cols):
                 v = grid[r][c]
@@ -330,8 +330,8 @@ class AxisIntersectionFillSolver(BaseSolver):
         cells = color_cells[marker_color]
 
         # Count markers per row and per column
-        row_count: Dict[int, int] = {}
-        col_count: Dict[int, int] = {}
+        row_count: dict[int, int] = {}
+        col_count: dict[int, int] = {}
         for r, c in cells:
             row_count[r] = row_count.get(r, 0) + 1
             col_count[c] = col_count.get(c, 0) + 1
@@ -371,7 +371,7 @@ class AxisIntersectionFillSolver(BaseSolver):
 
         return None
 
-    def _learn_fill_color(self, inp: Grid, out: Grid, bg: int) -> Optional[int]:
+    def _learn_fill_color(self, inp: Grid, out: Grid, bg: int) -> int | None:
         inp_colors = {inp[r][c] for r in range(len(inp)) for c in range(len(inp[0]))}
         out_colors = {out[r][c] for r in range(len(out)) for c in range(len(out[0]))}
         new_colors = out_colors - inp_colors
@@ -379,18 +379,18 @@ class AxisIntersectionFillSolver(BaseSolver):
             return next(iter(new_colors))
         return None
 
-    def _apply(self, inp: Grid, row_set: Set[int], col_set: Set[int], fill_color: int) -> Grid:
+    def _apply(self, inp: Grid, row_set: set[int], col_set: set[int], fill_color: int) -> Grid:
         out = [row[:] for row in inp]
         for r in row_set:
             for c in col_set:
                 out[r][c] = fill_color
         return out
 
-    def _verify(self, inp: Grid, expected: Grid, row_set: Set[int], col_set: Set[int], fill_color: int) -> bool:
+    def _verify(self, inp: Grid, expected: Grid, row_set: set[int], col_set: set[int], fill_color: int) -> bool:
         pred = self._apply(inp, row_set, col_set, fill_color)
         return pred == expected
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 
@@ -450,7 +450,7 @@ class SubgridExtractSolver(BaseSolver):
 
     name = "SubgridExtractSolver"
 
-    def _find_offset(self, inp: Grid, out: Grid) -> Optional[Tuple[int,int]]:
+    def _find_offset(self, inp: Grid, out: Grid) -> tuple[int, int] | None:
         """Find (row_offset, col_offset) such that inp[r0:r0+H, c0:c0+W] == out."""
         H_in, W_in = len(inp), len(inp[0])
         H_out, W_out = len(out), len(out[0])
@@ -470,7 +470,7 @@ class SubgridExtractSolver(BaseSolver):
                     return (ro, co)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         if not ctx.train_pairs:
             return None
 

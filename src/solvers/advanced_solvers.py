@@ -20,14 +20,11 @@ New solvers targeting 8 unsolved buckets:
 """
 from __future__ import annotations
 
-import math
-from collections import Counter, defaultdict, deque
-from typing import Optional
+from collections import Counter, deque
 
-from ..core.grid_codec import Grid, background_color, copy_grid
-from ..core.interfaces import BaseSolver, SolverResult, TaskContext, Prediction
+from ..core.grid_codec import Grid, background_color
+from ..core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from .registry import register_solver
-
 
 # ── Shared utilities ────────────────────────────────────────────────────────
 
@@ -125,7 +122,7 @@ class ParameterizedColorSwapSolver(BaseSolver):
             inp_colors = {v for r in inp for v in r if v != 0}
             out_colors = {v for r in out for v in r if v != 0}
             lost = inp_colors - out_colors  # colors that disappeared
-            gained = out_colors - inp_colors  # colors that appeared
+            out_colors - inp_colors  # colors that appeared
             # anchor should stay or transform
             if not lost:
                 return None
@@ -181,7 +178,7 @@ class ParameterizedColorSwapSolver(BaseSolver):
                     out[r][c] = 0
         return out
 
-    def _find_test_secondary(self, test_inp: Grid, anchor: int, training_secondaries: list) -> Optional[int]:
+    def _find_test_secondary(self, test_inp: Grid, anchor: int, training_secondaries: list) -> int | None:
         """Find the secondary color in test input (any color not 0, not anchor that appears in test)."""
         test_colors = {v for r in test_inp for v in r if v not in (0, anchor)}
         # Must be exactly one unknown color that matches training pattern
@@ -197,7 +194,7 @@ class ParameterizedColorSwapSolver(BaseSolver):
             return in_test[0]
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs or len(train_pairs) < 2:
             return None
@@ -255,7 +252,7 @@ class RowPeriodicFillSolver(BaseSolver):
     def priority(self) -> int:
         return 61
 
-    def _detect_row_period(self, grid: Grid) -> Optional[list]:
+    def _detect_row_period(self, grid: Grid) -> list | None:
         """Return the minimal repeating row sequence, or None."""
         H = len(grid)
         for period in range(1, H // 2 + 1):
@@ -265,7 +262,7 @@ class RowPeriodicFillSolver(BaseSolver):
                     return template
         return None
 
-    def _detect_col_period(self, row: list) -> Optional[list]:
+    def _detect_col_period(self, row: list) -> list | None:
         """Return minimal repeating element sequence in a row."""
         W = len(row)
         for period in range(1, W // 2 + 1):
@@ -301,7 +298,7 @@ class RowPeriodicFillSolver(BaseSolver):
                     out[r][c] = template[r % period][c]
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -337,7 +334,7 @@ class ZeroFillByPeriodicTileSolver(BaseSolver):
     def priority(self) -> int:
         return 62
 
-    def _find_tile(self, grid: Grid, bg: int) -> Optional[Grid]:
+    def _find_tile(self, grid: Grid, bg: int) -> Grid | None:
         """Find the smallest tile that tiles the non-zero region."""
         H, W = _sh(grid)
         # Collect non-bg cells
@@ -380,7 +377,7 @@ class ZeroFillByPeriodicTileSolver(BaseSolver):
                         out[r][c] = tile_val
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -506,7 +503,7 @@ class TileWithFlipSolver(BaseSolver):
                     return iw, iw
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -599,7 +596,7 @@ class ObjectRecolorByShapeSolver(BaseSolver):
             shape_map[sk] = tgt
         return shape_map
 
-    def _apply_shape_map(self, grid: Grid, shape_map: dict, bg: int) -> Optional[Grid]:
+    def _apply_shape_map(self, grid: Grid, shape_map: dict, bg: int) -> Grid | None:
         objs = self._classify_objects(grid, bg)
         out = _clone(grid)
         for src_color, cells, sk in objs:
@@ -610,7 +607,7 @@ class ObjectRecolorByShapeSolver(BaseSolver):
                 out[r][c] = tgt
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -708,7 +705,7 @@ class SymmetryCompleteSolver(BaseSolver):
                 return False
         return True
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -817,7 +814,7 @@ class SelectSubgridByMarkerSolver(BaseSolver):
                 return i
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -904,7 +901,7 @@ class GridRowColSortSolver(BaseSolver):
         reconstructed = [[sorted_cols[c][r] for c in range(W)] for r in range(H)]
         return reconstructed == out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -981,7 +978,7 @@ class RepeatRowColPatternSolver(BaseSolver):
         H, W = _sh(grid)
         return [[template[r] for _ in range(W)] for r in range(H)]
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1052,14 +1049,14 @@ class ColorCountToOutputSolver(BaseSolver):
     def _count_colors(self, grid: Grid) -> dict:
         return Counter(v for r in grid for v in r)
 
-    def _encode_counts(self, grid: Grid, mode: str) -> Optional[Grid]:
+    def _encode_counts(self, grid: Grid, mode: str) -> Grid | None:
         counts = self._count_colors(grid)
         bg = _bg(grid)
         nonbg = {k: v for k, v in counts.items() if k != bg}
         if not nonbg:
             return None
 
-        sorted_colors = sorted(nonbg.keys())
+        sorted(nonbg.keys())
         sorted_by_count = sorted(nonbg.items(), key=lambda x: -x[1])
 
         if mode == "single_cell_dominant":
@@ -1080,7 +1077,7 @@ class ColorCountToOutputSolver(BaseSolver):
 
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1151,7 +1148,7 @@ class GravityAllDirectionsSolver(BaseSolver):
                 out[r] = new_row
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1217,7 +1214,7 @@ class FillEnclosedHolesSolver(BaseSolver):
         all_bg = {(r,c) for r in range(H) for c in range(W) if grid[r][c] == bg}
         return all_bg - reachable
 
-    def _infer_fill_color(self, inp: Grid, out: Grid, bg: int) -> Optional[int]:
+    def _infer_fill_color(self, inp: Grid, out: Grid, bg: int) -> int | None:
         enclosed = self._get_enclosed_bg(inp, bg)
         if not enclosed:
             return None
@@ -1235,7 +1232,7 @@ class FillEnclosedHolesSolver(BaseSolver):
             out[r][c] = fill_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1287,7 +1284,7 @@ class PerPairObjectMoverSolver(BaseSolver):
     def priority(self) -> int:
         return 72
 
-    def _find_displacement(self, inp: Grid, out: Grid, bg: int) -> Optional[tuple]:
+    def _find_displacement(self, inp: Grid, out: Grid, bg: int) -> tuple | None:
         H, W = _sh(inp)
         if _sh(out) != (H, W):
             return None
@@ -1320,7 +1317,7 @@ class PerPairObjectMoverSolver(BaseSolver):
                 return (dr, dc)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1430,7 +1427,7 @@ class ZeroRunFillSolver(BaseSolver):
                     elif last != 0: out[r][c] = last
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1491,7 +1488,7 @@ class ColorBandSolver(BaseSolver):
                 out[r][c] = fill_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1598,7 +1595,7 @@ class PatternCompletionBySeedSolver(BaseSolver):
                         out[r][c] = tile_val
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1673,7 +1670,7 @@ class ObjectCountOutputSolver(BaseSolver):
         # Fill with n using a specific value from the template
         vals = [v for r in template_out for v in r if v != 0]
         fill_val = Counter(vals).most_common(1)[0][0] if vals else 1
-        bg_val = _bg(template_out)
+        _bg(template_out)
 
         # If output is a row of n filled cells
         if H == 1 and W == n:
@@ -1685,7 +1682,7 @@ class ObjectCountOutputSolver(BaseSolver):
         # n x something
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1733,7 +1730,7 @@ class ObjectCountOutputSolver(BaseSolver):
 
 # ── 18. LinesFromObjectsSolver ────────────────────────────────────────────────
 
-@register_solver  
+@register_solver
 class LinesFromObjectsSolver(BaseSolver):
     """
     Each non-bg cell shoots a ray in a fixed direction until hitting another
@@ -1780,7 +1777,7 @@ class LinesFromObjectsSolver(BaseSolver):
                 return (direction, ray_color)
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1836,7 +1833,7 @@ class SizeBasedOutputSolver(BaseSolver):
                     sizes.append(len(cc))
         return sorted(sizes)
 
-    def _sizes_to_grid(self, sizes: list, out_shape: tuple) -> Optional[Grid]:
+    def _sizes_to_grid(self, sizes: list, out_shape: tuple) -> Grid | None:
         oh, ow = out_shape
         if oh == 1 and ow == len(sizes):
             return [sizes]
@@ -1844,7 +1841,7 @@ class SizeBasedOutputSolver(BaseSolver):
             return [[s] for s in sizes]
         return None
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None
@@ -1915,7 +1912,7 @@ class RectangleFillSolver(BaseSolver):
                 out[r][c] = fill_color
         return out
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         train_pairs = ctx.train_pairs
         if not train_pairs:
             return None

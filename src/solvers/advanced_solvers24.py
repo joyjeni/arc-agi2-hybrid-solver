@@ -25,12 +25,11 @@ from __future__ import annotations
 
 import copy
 from collections import Counter
-from typing import List, Optional
 
-from src.core.interfaces import BaseSolver, TaskContext, SolverResult, Prediction
+from src.core.interfaces import BaseSolver, Prediction, SolverResult, TaskContext
 from src.solvers.registry import register_solver
 
-Grid = List[List[int]]
+Grid = list[list[int]]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -112,7 +111,7 @@ def _meta_background(grid: Grid) -> int:
     return Counter(flat).most_common(1)[0][0]
 
 
-def _meta_propagate(grid: Grid) -> Optional[Grid]:
+def _meta_propagate(grid: Grid) -> Grid | None:
     result = _decompose_meta_grid(grid)
     if result is None:
         return None
@@ -162,7 +161,7 @@ class MetaGridCrossPropagateSolver(BaseSolver):
     def name(self) -> str:
         return "MetaGridCrossPropagateSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         # Validate on all training pairs
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
@@ -195,7 +194,7 @@ class MetaGridCrossPropagateSolver(BaseSolver):
 # 2. AlternatingSpacedEchoSolver  (72207abc)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _echo_solve(grid: Grid) -> Optional[Grid]:
+def _echo_solve(grid: Grid) -> Grid | None:
     if len(grid) != 3:
         return None
     # Rows 0 and 2 must be all-zero
@@ -235,7 +234,7 @@ class AlternatingSpacedEchoSolver(BaseSolver):
     def name(self) -> str:
         return "AlternatingSpacedEchoSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -266,7 +265,7 @@ class AlternatingSpacedEchoSolver(BaseSolver):
 # 3. LatinSquareCompletionSolver  (4cd1b7b2)
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _latin_solve(grid: Grid) -> Optional[Grid]:
+def _latin_solve(grid: Grid) -> Grid | None:
     N = len(grid)
     if N == 0 or any(len(row) != N for row in grid):
         return None
@@ -309,7 +308,7 @@ class LatinSquareCompletionSolver(BaseSolver):
     def name(self) -> str:
         return "LatinSquareCompletionSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
@@ -368,7 +367,7 @@ def _bar_color(grid: Grid, col: int) -> int:
     return _BAR_BG
 
 
-def _barsum_solve(grid: Grid) -> Optional[Grid]:
+def _barsum_solve(grid: Grid) -> Grid | None:
     rows = len(grid)
     cols = len(grid[0]) if grid else 0
     if rows < 2 or cols < 2:
@@ -423,7 +422,7 @@ class VerticalBarSumSolver(BaseSolver):
     def name(self) -> str:
         return "VerticalBarSumSolver"
 
-    def solve(self, ctx: TaskContext) -> Optional[SolverResult]:
+    def solve(self, ctx: TaskContext) -> SolverResult | None:
         for pair in ctx.train_pairs:
             inp = pair["input"] if isinstance(pair, dict) else pair[0]
             exp = pair["output"] if isinstance(pair, dict) else pair[1]
