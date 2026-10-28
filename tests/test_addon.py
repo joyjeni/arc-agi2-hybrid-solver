@@ -233,3 +233,27 @@ def test_symmetrize_family_deletes_unmatched_cells_and_abstains_per_input():
     test = make(7, 8, [(r + 2, c) for r, c in sym], [(6, 6)])
     assert verify(symmetrize, train)
     assert symmetrize(train, [test["input"]]) == [test["output"]]
+
+
+def test_edge_snap_family_moves_objects_by_colour():
+    from src.addon.families import edge_snap
+
+    def make(h, w, objs):
+        """objs: (colour, top-left row, col, height, width); colour 3 -> top edge, 5 -> bottom."""
+        g = [[0] * w for _ in range(h)]
+        out = [[0] * w for _ in range(h)]
+        for colour, r, c, hh, ww in objs:
+            r2 = 0 if colour == 3 else h - hh
+            for y in range(hh):
+                for x in range(ww):
+                    g[r + y][c + x] = colour
+                    out[r2 + y][c + x] = colour
+        return {"input": g, "output": out}
+
+    # both colours appear with the same sizes, so only colour predicts the edge
+    train = [make(10, 10, [(3, 4, 0, 2, 2), (5, 3, 3, 2, 2), (3, 5, 6, 1, 3)]),
+             make(10, 10, [(5, 4, 0, 1, 3), (3, 3, 4, 2, 2), (5, 5, 7, 2, 2)]),
+             make(10, 10, [(3, 4, 0, 1, 3), (5, 4, 4, 1, 3), (3, 5, 8, 2, 2), (5, 2, 8, 1, 2)])]
+    test = make(10, 10, [(5, 3, 0, 2, 2), (3, 4, 3, 1, 3), (5, 2, 7, 1, 3)])
+    assert verify(edge_snap, train)
+    assert edge_snap(train, [test["input"]]) == [test["output"]]

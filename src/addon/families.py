@@ -907,6 +907,91 @@ def symmetrize(train, test_inputs):
     return _consensus(answers)
 
 
+
+# ── family: objects slide to an edge chosen by a property ────────────────────
+
+def _obj_key(a: np.ndarray, comp: dict, feature: str):
+    r0, r1, c0, c1 = comp["bbox"]
+    if feature == "colour":
+        return tuple(sorted(set(np.unique(a[comp["mask"]]).tolist())))
+    if feature == "area":
+        return int(comp["mask"].sum())
+    if feature == "height":
+        return r1 - r0
+    return c1 - c0  # width
+
+
+def _snap(a: np.ndarray, axis: str, feature: str, table: dict | None):
+    """Move every object to the edge given by table[key] (learning the table if None).
+    Returns (grid, table) or (None, None)."""
+    bg = _bg(a)
+    h, w = a.shape
+    comps = _components(a, bg, diag=True, multicolor=True)
+    if not comps:
+        return None, None
+    out = np.full_like(a, bg)
+    learned = {} if table is None else table
+    placed = []
+    for comp in comps:
+        key = _obj_key(a, comp, feature)
+        r0, r1, c0, c1 = comp["bbox"]
+        cells = list(zip(*np.nonzero(comp["mask"])))
+        if table is None:
+            placed.append((comp, key, cells, r0, r1, c0, c1))
+            continue
+        if key not in table:
+            return None, None
+        d = table[key]
+        dy = (-r0 if d == "start" else h - r1) if axis == "v" else 0
+        dx = (-c0 if d == "start" else w - c1) if axis == "h" else 0
+        for r, c in cells:
+            if out[r + dy, c + dx] != bg:
+                return None, None
+            out[r + dy, c + dx] = a[r, c]
+    return (out, learned) if table is not None else (placed, None)
+
+
+def edge_snap(train, test_inputs):
+    """Each object moves straight to one edge; which edge depends on a learned property."""
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    answers: list[list[Grid]] = []
+    for axis in ("v", "h"):
+        for feature in ("colour", "area", "height", "width"):
+            table: dict = {}
+            good = True
+            for p in train:
+                a, o = _arr(p["input"]), _arr(p["output"])
+                placed, _ = _snap(a, axis, feature, None)
+                if placed is None:
+                    good = False
+                    break
+                h, w = a.shape
+                for comp, key, cells, r0, r1, c0, c1 in placed:
+                    fits = []
+                    for d in ("start", "end"):
+                        dy = (-r0 if d == "start" else h - r1) if axis == "v" else 0
+                        dx = (-c0 if d == "start" else w - c1) if axis == "h" else 0
+                        if all(o[r + dy, c + dx] == a[r, c] for r, c in cells):
+                            fits.append(d)
+                    if len(fits) != 1 or table.setdefault(key, fits[0]) != fits[0]:
+                        good = False
+                        break
+                if not good:
+                    break
+            if not good or len(set(table.values())) < 2:
+                continue  # need both directions in training to call it a rule
+            if not all((r := _snap(_arr(p["input"]), axis, feature, table)[0]) is not None
+                       and np.array_equal(r, _arr(p["output"])) for p in train):
+                continue
+            out = []
+            for g in test_inputs:
+                r = _snap(_arr(g), axis, feature, table)[0]
+                out.append(None if r is None else r.tolist())
+            answers.append(out)
+    return _consensus(answers)
+
+
 FAMILIES = [
     ("family:symmetry", symmetry),
     ("family:periodic", periodic),
@@ -918,4 +1003,5 @@ FAMILIES = [
     ("family:rays", rays),
     ("family:align", align_to_marker),
     ("family:symmetrize", symmetrize),
+    ("family:edge_snap", edge_snap),
 ]

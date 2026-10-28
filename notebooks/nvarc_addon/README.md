@@ -20,14 +20,14 @@ untouched.
 | Split | Correct outputs | Wrong outputs | Time (1 CPU core) |
 |---|---|---|---|
 | Evaluation, 120 tasks | 8 (6 tasks) | 0 | 36 s |
-| Training, 1000 tasks | 339 | 0 | 138 s |
+| Training, 1000 tasks | 339 | 0 | 147 s |
 
 Sources, in the order they are tried:
 
 - this repo's 399 solvers
 - `Arc2SymbolicSolver.solve_verified_geometry` (third-party, Apache-2.0, see `src/addon/third_party/arc2_symbolic.py`)
 - a generic program search
-- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, grid partition (pick a cell, or a boolean overlay of cells), motif recolouring, a local 3x3 neighbourhood rule, reflection across a marker line or point, rays from seed cells, alignment to a reference marker, and making shapes symmetric by deleting unmatched cells
+- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, grid partition (pick a cell, or a boolean overlay of cells), motif recolouring, a local 3x3 neighbourhood rule, reflection across a marker line or point, rays from seed cells, alignment to a reference marker, making shapes symmetric by deleting unmatched cells, and objects sliding to an edge chosen by a learned property
 
 Families that fit their parameters by choosing among several rules answer a test input only when **every** fitted rule that answers it agrees; otherwise they abstain on that input. A source may answer some test inputs and abstain on others.
 
