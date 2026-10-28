@@ -212,3 +212,24 @@ def test_rays_family_draws_learned_directions():
     test = make(8, 8, [(6, 2), (7, 6)])
     assert verify(rays, train)
     assert rays(train, [test["input"]]) == [test["output"]]
+
+
+def test_symmetrize_family_deletes_unmatched_cells_and_abstains_per_input():
+    from src.addon.families import symmetrize
+
+    def make(h, w, shape_cols, extra, colour=1):
+        """Left-right symmetric shape plus stray cells that break the symmetry."""
+        g = [[0] * w for _ in range(h)]
+        out = [[0] * w for _ in range(h)]
+        for r, c in shape_cols:
+            g[r][c] = out[r][c] = colour
+        for r, c in extra:
+            g[r][c] = colour
+        return {"input": g, "output": out}
+
+    sym = [(1, 2), (1, 4), (2, 1), (2, 3), (2, 5), (3, 2), (3, 4)]
+    train = [make(6, 8, sym, [(4, 1)]), make(6, 8, sym, [(0, 5), (4, 4)]),
+             make(7, 9, [(r + 1, c + 1) for r, c in sym], [(1, 1)])]
+    test = make(7, 8, [(r + 2, c) for r, c in sym], [(6, 6)])
+    assert verify(symmetrize, train)
+    assert symmetrize(train, [test["input"]]) == [test["output"]]

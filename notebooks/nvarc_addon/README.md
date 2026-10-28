@@ -19,7 +19,7 @@ untouched.
 
 | Split | Correct outputs | Wrong outputs | Time (1 CPU core) |
 |---|---|---|---|
-| Evaluation, 120 tasks | 7 (5 tasks) | 0 | 33 s |
+| Evaluation, 120 tasks | 8 (6 tasks) | 0 | 36 s |
 | Training, 1000 tasks | 339 | 0 | 138 s |
 
 Sources, in the order they are tried:
@@ -27,11 +27,11 @@ Sources, in the order they are tried:
 - this repo's 399 solvers
 - `Arc2SymbolicSolver.solve_verified_geometry` (third-party, Apache-2.0, see `src/addon/third_party/arc2_symbolic.py`)
 - a generic program search
-- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, grid partition (pick a cell, or a boolean overlay of cells), motif recolouring, a local 3x3 neighbourhood rule, reflection across a marker line or point, rays from seed cells, and alignment to a reference marker
+- general rule families in `src/addon/families.py`: symmetry completion (mirrors, rotations, translations), periodic completion (including staggered and diagonal repeats), object selection, grid partition (pick a cell, or a boolean overlay of cells), motif recolouring, a local 3x3 neighbourhood rule, reflection across a marker line or point, rays from seed cells, alignment to a reference marker, and making shapes symmetric by deleting unmatched cells
 
-Families that fit their parameters by choosing among several rules answer only when **every** rule that fits the training pairs agrees on the test input; otherwise they abstain.
+Families that fit their parameters by choosing among several rules answer a test input only when **every** fitted rule that answers it agrees; otherwise they abstain on that input. A source may answer some test inputs and abstain on others.
 
-Development used the training tasks and a fixed half of the evaluation tasks (by task-id hash); the other half was never inspected. All 5 solved evaluation tasks are in the development half — **0 of the held-out half is solved**, so there is no evidence yet that these rules transfer to unseen tasks.
+Development used the training tasks and a fixed half of the evaluation tasks (by task-id hash); the other half was never inspected. All 6 solved evaluation tasks are in the development half — **0 of the held-out half is solved**, so there is no evidence yet that these rules transfer to unseen tasks.
 
 **Expected effect:** small — roughly 0–2 points on top of NVARC, depending on how many
 hidden tasks the rules fit that NVARC misses. The model does nearly all the solving.

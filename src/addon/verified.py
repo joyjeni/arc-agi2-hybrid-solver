@@ -249,8 +249,8 @@ def solve_task(task: dict, sources, timeout_s: float = 2.0) -> tuple[list[Grid |
         preds = _call_with_timeout(src, timeout_s, train, test_inputs)
         if not preds or len(preds) != len(test_inputs):
             continue
-        grids = [_plain(p) for p in preds]
-        if all(g is not None for g in grids):
+        grids = [_plain(p) if p is not None else None for p in preds]
+        if any(g is not None for g in grids):  # a source may abstain on some test inputs
             return grids, name
     return [None] * len(test_inputs), None
 

@@ -161,18 +161,11 @@ def _completion_family(train, test_inputs, filler):
         a = _arr(g)
         mask = a == c
         full = filler(a, mask)
-        if full is None:
-            return None
-        if crop:
+        if full is not None and crop:
             bb = _bbox(mask)
-            if bb is None:
-                return None
-            r0, r1, c0, c1 = bb
-            full = full[r0:r1, c0:c1]
-        if not _ok(full):
-            return None
-        preds.append(full.tolist())
-    return preds
+            full = None if bb is None else full[bb[0]:bb[1], bb[2]:bb[3]]
+        preds.append(full.tolist() if full is not None and _ok(full) else None)
+    return preds if any(p is not None for p in preds) else None
 
 
 def symmetry(train, test_inputs):
@@ -286,12 +279,16 @@ def _pick_obj(a: np.ndarray, comps: list[dict], feats: list[dict], key: str, sig
     return first if all(np.array_equal(c, first) for c in crops[1:]) else None
 
 
-def _consensus(answers: list[list[Grid]]) -> list[Grid] | None:
-    """Return the answer only if every rule that fitted the training pairs agrees on it."""
+def _consensus(answers: list[list]) -> list | None:
+    """Per test input: the answer every fitted rule gives, ignoring rules that abstain on that
+    input (None). If two rules give different answers for an input, abstain on that input."""
     if not answers:
         return None
-    first = answers[0]
-    return first if all(a == first for a in answers[1:]) else None
+    out = []
+    for k in range(len(answers[0])):
+        given = [a[k] for a in answers if a[k] is not None]
+        out.append(given[0] if given and all(g == given[0] for g in given[1:]) else None)
+    return out if any(g is not None for g in out) else None
 
 
 def object_select(train, test_inputs):
@@ -643,9 +640,7 @@ def mirror_reflect(train, test_inputs):
         out = []
         for g in test_inputs:
             r = _apply_mirror(_arr(g), m)
-            if r is None:
-                return None
-            out.append(r.tolist())
+            out.append(None if r is None else r.tolist())  # abstain on this input only
         answers.append(out)
     return _consensus(answers)
 
@@ -840,9 +835,7 @@ def align_to_marker(train, test_inputs):
                 a = _arr(g)
                 kk = pick(a)
                 r = _align(a, kk, axis) if kk is not None else None
-                if r is None:
-                    return None
-                out.append(r.tolist())
+                out.append(None if r is None else r.tolist())  # abstain on this input only
             answers.append(out)
     for axis in ("col", "row"):
         if not all((r := _align_auto(_arr(p["input"]), axis)) is not None
@@ -851,10 +844,66 @@ def align_to_marker(train, test_inputs):
         out = []
         for g in test_inputs:
             r = _align_auto(_arr(g), axis)
-            if r is None:
-                return None
-            out.append(r.tolist())
+            out.append(None if r is None else r.tolist())  # abstain on this input only
         answers.append(out)
+    return _consensus(answers)
+
+
+
+# ── family: make shapes symmetric by deleting unmatched cells ─────────────────
+
+def _symmetrize(a: np.ndarray, group: str, axis: str) -> np.ndarray | None:
+    """For each shape (all cells of one colour, or one connected object), find the mirror axis
+    with the most matched cells and delete the cells that have no mirror partner."""
+    bg = _bg(a)
+    out = a.copy()
+    if group == "colour":
+        masks = [a == c for c in np.unique(a).tolist() if c != bg]
+    else:
+        masks = [comp["mask"] for comp in _components(a, bg, diag=True, multicolor=False)]
+    changed = False
+    for m in masks:
+        rr, cc = np.nonzero(m)
+        if len(rr) < 3:
+            continue
+        coord = cc if axis == "v" else rr
+        best, best_n, tie = None, -1, False
+        for s_ in range(int(coord.min()) * 2, int(coord.max()) * 2 + 1):
+            if axis == "v":
+                r2, c2 = rr, s_ - cc
+            else:
+                r2, c2 = s_ - rr, cc
+            inside = (r2 >= 0) & (r2 < a.shape[0]) & (c2 >= 0) & (c2 < a.shape[1])
+            matched = np.zeros(len(rr), dtype=bool)
+            matched[inside] = m[r2[inside], c2[inside]] & (a[r2[inside], c2[inside]] == a[rr[inside], cc[inside]])
+            n = int(matched.sum())
+            if n > best_n:
+                best, best_n, tie = (s_, matched), n, False
+            elif n == best_n:
+                tie = True
+        if best is None or tie or best_n < len(rr) * 0.6:
+            return None
+        _s, matched = best
+        if (~matched).any():
+            out[rr[~matched], cc[~matched]] = bg
+            changed = True
+    return out if changed else None
+
+
+def symmetrize(train, test_inputs):
+    if any(_arr(p["input"]).shape != _arr(p["output"]).shape for p in train):
+        return None
+    answers: list[list[Grid]] = []
+    for group in ("colour", "object"):
+        for axis in ("v", "h"):
+            if not all((r := _symmetrize(_arr(p["input"]), group, axis)) is not None
+                       and np.array_equal(r, _arr(p["output"])) for p in train):
+                continue
+            out = []
+            for g in test_inputs:
+                r = _symmetrize(_arr(g), group, axis)
+                out.append(None if r is None else r.tolist())  # abstain on this input only
+            answers.append(out)
     return _consensus(answers)
 
 
@@ -868,4 +917,5 @@ FAMILIES = [
     ("family:mirror", mirror_reflect),
     ("family:rays", rays),
     ("family:align", align_to_marker),
+    ("family:symmetrize", symmetrize),
 ]
