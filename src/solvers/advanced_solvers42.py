@@ -75,27 +75,37 @@ class DotTo3x3BoxSolver(BaseSolver):
                 return False
         return True
 
+    def _apply_dot(self, inp, cmap):
+        from collections import Counter
+        bg = _bg(inp)
+        H, W = len(inp), len(inp[0])
+        out = [row[:] for row in inp]
+        for r in range(H):
+            for c in range(W):
+                k = inp[r][c]
+                if k == bg:
+                    continue
+                bcol = cmap.get(k, k)
+                for dr, dc in self._RING:
+                    nr, nc = r+dr, c+dc
+                    if 0 <= nr < H and 0 <= nc < W:
+                        out[nr][nc] = bcol
+        return out
+
     def solve(self, ctx):
         if not self._is_valid(ctx):
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
         cmap = self._learn(ctx.train_pairs)
         if not cmap:
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
+        # GUARD: verify full transform on ALL training pairs
+        for pair in ctx.train_pairs:
+            pred = self._apply_dot(pair["input"], cmap)
+            if pred != pair["output"]:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
         preds = []
         for test_inp in ctx.test_inputs:
-            bg = _bg(test_inp)
-            H, W = len(test_inp), len(test_inp[0])
-            out = [row[:] for row in test_inp]
-            for r in range(H):
-                for c in range(W):
-                    k = test_inp[r][c]
-                    if k == bg:
-                        continue
-                    bcol = cmap.get(k, k)
-                    for dr, dc in self._RING:
-                        nr, nc = r+dr, c+dc
-                        if 0 <= nr < H and 0 <= nc < W:
-                            out[nr][nc] = bcol
+            out = self._apply_dot(test_inp, cmap)
             preds.append(Prediction(attempt_1=out, attempt_2=out,
                                     solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
@@ -271,6 +281,9 @@ class GravityShapeToWallSolver(BaseSolver):
         candidates = None
         for pair in train_pairs:
             inp, out = pair['input'], pair['output']
+            # Guard: output must match input dimensions
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return None
             bg = _bg(inp)
             H, W = len(inp), len(inp[0])
             pair_colors = set()
@@ -352,73 +365,76 @@ class GravityShapeToWallSolver(BaseSolver):
                 return False
         return True
 
+    def _apply_one(self, inp, wcolor):
+        """Apply the gravity transform to one input grid. Returns output grid or None."""
+        bg = _bg(inp)
+        H, W = len(inp), len(inp[0])
+        wt, widxs, wc = self._get_wall(inp, wall_color=wcolor)
+        if wt is None:
+            return None
+        shape = [(r, c, inp[r][c]) for r in range(H) for c in range(W)
+                 if inp[r][c] != bg and inp[r][c] != wc]
+        if not shape:
+            return None
+        srs = [x[0] for x in shape]
+        scs = [x[1] for x in shape]
+        if wt == 'row':
+            if max(widxs) < min(srs):
+                target  = max(widxs) + 1
+                shift_r = target - min(srs)
+            else:
+                target  = min(widxs) - 1
+                shift_r = target - max(srs)
+            new_shape = [(r + shift_r, c, v) for r, c, v in shape]
+            new_rs = [x[0] for x in new_shape]
+            marker_idx = (max(new_rs) + 1 if max(widxs) < min(srs)
+                          else min(new_rs) - 1)
+        else:
+            if max(widxs) < min(scs):
+                target  = max(widxs) + 1
+                shift_c = target - min(scs)
+            else:
+                target  = min(widxs) - 1
+                shift_c = target - max(scs)
+            new_shape = [(r, c + shift_c, v) for r, c, v in shape]
+            new_cs = [x[1] for x in new_shape]
+            marker_idx = (max(new_cs) + 1 if max(widxs) < min(scs)
+                          else min(new_cs) - 1)
+        out = [[bg] * W for _ in range(H)]
+        if wt == 'row':
+            for wi in widxs:
+                for c in range(W):
+                    out[wi][c] = wc
+        else:
+            for wi in widxs:
+                for r in range(H):
+                    out[r][wi] = wc
+        for r, c, v in new_shape:
+            if 0 <= r < H and 0 <= c < W:
+                out[r][c] = v
+        if wt == 'row' and 0 <= marker_idx < H:
+            for c in range(W):
+                out[marker_idx][c] = 8
+        elif wt == 'col' and 0 <= marker_idx < W:
+            for r in range(H):
+                out[r][marker_idx] = 8
+        return out
+
     def solve(self, ctx):
         if not self._is_valid(ctx):
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
         wcolor = self._learn_wall_color(ctx.train_pairs)
+        # GUARD: end-to-end training verification
+        for pair in ctx.train_pairs:
+            pred = self._apply_one(pair['input'], wcolor)
+            if pred is None or pred != pair['output']:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
 
         preds = []
         for test_inp in ctx.test_inputs:
-            bg = _bg(test_inp)
-            H, W = len(test_inp), len(test_inp[0])
-            wt, widxs, wc = self._get_wall(test_inp, wall_color=wcolor)
-            if wt is None:
+            out = self._apply_one(test_inp, wcolor)
+            if out is None:
                 continue
-
-            shape = [(r, c, test_inp[r][c]) for r in range(H) for c in range(W)
-                     if test_inp[r][c] != bg and test_inp[r][c] != wc]
-            if not shape:
-                continue
-
-            srs = [x[0] for x in shape]
-            scs = [x[1] for x in shape]
-
-            if wt == 'row':
-                if max(widxs) < min(srs):       # wall above shape → slide up
-                    target  = max(widxs) + 1    # shape_min_r → target
-                    shift_r = target - min(srs)
-                else:                            # wall below shape → slide down
-                    target  = min(widxs) - 1    # shape_max_r → target
-                    shift_r = target - max(srs)
-                new_shape = [(r + shift_r, c, v) for r, c, v in shape]
-                new_rs = [x[0] for x in new_shape]
-                marker_idx = (max(new_rs) + 1 if max(widxs) < min(srs)
-                              else min(new_rs) - 1)
-            else:  # col wall
-                if max(widxs) < min(scs):       # wall left of shape → slide left
-                    target  = max(widxs) + 1
-                    shift_c = target - min(scs)
-                else:                            # wall right of shape → slide right
-                    target  = min(widxs) - 1
-                    shift_c = target - max(scs)
-                new_shape = [(r, c + shift_c, v) for r, c, v in shape]
-                new_cs = [x[1] for x in new_shape]
-                marker_idx = (max(new_cs) + 1 if max(widxs) < min(scs)
-                              else min(new_cs) - 1)
-
-            # Build output
-            out = [[bg] * W for _ in range(H)]
-            # Place wall
-            if wt == 'row':
-                for wi in widxs:
-                    for c in range(W):
-                        out[wi][c] = wc
-            else:
-                for wi in widxs:
-                    for r in range(H):
-                        out[r][wi] = wc
-            # Place moved shape
-            for r, c, v in new_shape:
-                if 0 <= r < H and 0 <= c < W:
-                    out[r][c] = v
-            # Place 8-marker
-            if wt == 'row' and 0 <= marker_idx < H:
-                for c in range(W):
-                    out[marker_idx][c] = 8
-            elif wt == 'col' and 0 <= marker_idx < W:
-                for r in range(H):
-                    out[r][marker_idx] = 8
-
             preds.append(Prediction(attempt_1=out, attempt_2=out,
                                     solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
@@ -472,14 +488,33 @@ class HolesToColumnColorsSolver(BaseSolver):
         rmap = self._learn_rank_map(ctx.train_pairs)
         if not rmap:
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
+        # GUARD: verify training predictions match ground truth exactly
+        for pair in ctx.train_pairs:
+            t_inp, t_out = pair['input'], pair['output']
+            tH, tW = len(t_inp), len(t_inp[0])
+            t_hole_cols = sorted({c for r in range(tH) for c in range(tW)
+                                  if t_inp[r][c] == 0})
+            t_pred = [row[:] for row in t_inp]
+            for rank, col in enumerate(t_hole_cols):
+                if rank not in rmap:
+                    return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
+                color = rmap[rank]
+                for r in range(tH):
+                    if t_inp[r][col] == 0:
+                        t_pred[r][col] = color
+            if t_pred != t_out:
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
         preds = []
         for test_inp in ctx.test_inputs:
             H, W = len(test_inp), len(test_inp[0])
             hole_cols = sorted({c for r in range(H) for c in range(W)
                                 if test_inp[r][c] == 0})
+            # Reject if test has unknown rank
+            if any(rank not in rmap for rank in range(len(hole_cols))):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
             out = [row[:] for row in test_inp]
             for rank, col in enumerate(hole_cols):
-                color = rmap.get(rank, rank + 1)
+                color = rmap[rank]
                 for r in range(H):
                     if test_inp[r][col] == 0:
                         out[r][col] = color

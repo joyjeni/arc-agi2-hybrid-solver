@@ -38,6 +38,20 @@ from . import (
     advanced_solvers29,    # noqa: F401
     advanced_solvers30,    # noqa: F401
     advanced_solvers31,    # noqa: F401
+    advanced_solvers32,    # noqa: F401
+    advanced_solvers33,    # noqa: F401
+    advanced_solvers34,    # noqa: F401
+    advanced_solvers35,    # noqa: F401
+    advanced_solvers42,    # noqa: F401
+    advanced_solvers43,    # noqa: F401
+    advanced_solvers44,    # noqa: F401
+    advanced_solvers45,    # noqa: F401
+    advanced_solvers46,    # noqa: F401
+    advanced_solvers47,    # noqa: F401
+    advanced_solvers48,    # noqa: F401
+    advanced_solvers49,    # noqa: F401
+    advanced_solvers50,    # noqa: F401
+    advanced_solvers51,    # noqa: F401
 )
 from .registry import REGISTRY, register_solver
 

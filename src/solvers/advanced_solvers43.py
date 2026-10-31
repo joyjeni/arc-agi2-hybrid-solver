@@ -1,4 +1,4 @@
-# advanced_solvers43.py — Session 43 (+4 solvers)
+# advanced_solvers43.py — Session 43 (+4 solvers) [PATCHED: training validation added]
 # Targets: e21a174a, 9ddd00f0, f45f5ca7, d968ffd4
 
 from collections import Counter, defaultdict
@@ -59,15 +59,6 @@ def _group_runs(indices):
 @register_solver
 class LayerReversalSolver(BaseSolver):
     """Reverses the ORDER of color-blocks in non-bg rows using RLE segmentation.
-    Algorithm (RLE by dominant row color):
-      1. For each row, compute dominant non-bg color (treat as bg if all-bg row).
-      2. Group consecutive rows with the SAME dominant non-bg color → segments
-         [(color, [row_indices]), ...].  bg-rows are skipped (not in any segment).
-      3. nb_rows  = all non-bg row indices in original order (flattened segments).
-      4. reversed_rows = row indices from reversed(segments), keeping internal
-         order within each segment intact.
-      5. For each (nb_pos, src_r) in zip(nb_rows, reversed_rows):
-             out[nb_pos] = input[src_r]
     Target: e21a174a
     """
 
@@ -77,74 +68,58 @@ class LayerReversalSolver(BaseSolver):
 
     @staticmethod
     def _dominant_non_bg_color(row, bg):
-        """Return the most common non-bg color in a row, or bg if the row is all-bg."""
         non_bg = [c for c in row if c != bg]
         if not non_bg:
             return bg
         return Counter(non_bg).most_common(1)[0][0]
 
-    def solve(self, ctx):
-        preds = []
-        for test_inp in ctx.test_inputs:
-            H, W = len(test_inp), len(test_inp[0])
-            bg = _bg43(test_inp)
-
-            # Step 1–2: RLE segmentation by dominant row color
-            segments = []          # [(color, [row_indices])]
-            cur_color, cur_rows = None, []
-
-            for r in range(H):
-                dom = self._dominant_non_bg_color(test_inp[r], bg)
-                if dom == bg:
-                    # bg row → flush current segment
+    def _transform_one(self, inp):
+        """Apply layer-reversal transform to a single grid."""
+        bg = _bg43(inp)
+        H = len(inp)
+        segments = []
+        cur_color, cur_rows = None, []
+        for r in range(H):
+            dom = self._dominant_non_bg_color(inp[r], bg)
+            if dom == bg:
+                if cur_rows:
+                    segments.append((cur_color, cur_rows))
+                    cur_color, cur_rows = None, []
+            else:
+                if dom == cur_color:
+                    cur_rows.append(r)
+                else:
                     if cur_rows:
                         segments.append((cur_color, cur_rows))
-                        cur_color, cur_rows = None, []
-                else:
-                    if dom == cur_color:
-                        cur_rows.append(r)
-                    else:
-                        # New color block starts
-                        if cur_rows:
-                            segments.append((cur_color, cur_rows))
-                        cur_color, cur_rows = dom, [r]
+                    cur_color, cur_rows = dom, [r]
+        if cur_rows:
+            segments.append((cur_color, cur_rows))
+        out = [list(row) for row in inp]
+        if not segments:
+            return out
+        nb_rows = [r for _, rows in segments for r in rows]
+        reversed_rows = [r for _, rows in reversed(segments) for r in rows]
+        for nb_pos, src_r in zip(nb_rows, reversed_rows):
+            out[nb_pos] = list(inp[src_r])
+        return out
 
-            # Flush trailing segment
-            if cur_rows:
-                segments.append((cur_color, cur_rows))
-
-            if not segments:
-                out = [list(row) for row in test_inp]
-                preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                         solver_name=self.name, confidence=0.0))
-                continue
-
-            # Step 3–4: flatten original and reversed order
-            nb_rows       = [r for _, rows in segments for r in rows]
-            reversed_rows = [r for _, rows in reversed(segments) for r in rows]
-
-            # Step 5: apply block-reversal
-            out = [list(row) for row in test_inp]
-            for nb_pos, src_r in zip(nb_rows, reversed_rows):
-                out[nb_pos] = list(test_inp[src_r])
-
+    def solve(self, ctx):
+        # GUARD: verify transform on ALL training pairs
+        for pair in ctx.train_pairs:
+            pred = self._transform_one(pair["input"])
+            if pred != pair["output"]:
+                return None
+        preds = []
+        for test_inp in ctx.test_inputs:
+            out = self._transform_one(test_inp)
             preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                     solver_name=self.name, confidence=1.0))
+                                    solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 @register_solver
 class GridBlockFillSolver(BaseSolver):
     """Fills empty blocks in a regular grid-of-blocks layout.
-    Each non-empty block has a single-cell hole at internal position (gr, gc)
-    where (gr, gc) is the block's position in the block grid.
-    Algorithm:
-      1. Find nz_rows/nz_cols; group into content row/col runs.
-      2. block_h/block_w = mode of run lengths; period = block_size + 1.
-      3. Generate ALL block start positions (extend pattern from first seen block).
-      4. fill_color = most common non-bg color.
-      5. For each all-bg block at grid position (gr, gc): fill all cells with
-         fill_color EXCEPT the hole at internal offset (gr, gc).
     Target: 9ddd00f0
     """
 
@@ -152,105 +127,75 @@ class GridBlockFillSolver(BaseSolver):
     def name(self):
         return "GridBlockFillSolver"
 
+    def _transform_one(self, inp):
+        """Apply the block-fill transform to a single grid."""
+        H, W = len(inp), len(inp[0])
+        bg = _bg43(inp)
+        nz_rows = [r for r in range(H) if any(inp[r][c] != bg for c in range(W))]
+        nz_cols = [c for c in range(W) if any(inp[r][c] != bg for r in range(H))]
+        if not nz_rows or not nz_cols:
+            return [list(row) for row in inp]
+        row_groups = _group_runs(nz_rows)
+        col_groups = _group_runs(nz_cols)
+        block_h = Counter(e - s + 1 for s, e in row_groups).most_common(1)[0][0]
+        block_w = Counter(e - s + 1 for s, e in col_groups).most_common(1)[0][0]
+        period_h = block_h + 1
+        period_w = block_w + 1
+        first_r = row_groups[0][0]
+        all_row_starts = []
+        r = first_r
+        while r < H:
+            all_row_starts.append(r); r += period_h
+        r = first_r - period_h
+        while r >= 0:
+            all_row_starts.insert(0, r); r -= period_h
+        first_c = col_groups[0][0]
+        all_col_starts = []
+        c = first_c
+        while c < W:
+            all_col_starts.append(c); c += period_w
+        c = first_c - period_w
+        while c >= 0:
+            all_col_starts.insert(0, c); c -= period_w
+        block_row_ranges = [(rs, min(rs + block_h - 1, H - 1))
+                            for rs in all_row_starts if 0 <= rs < H]
+        block_col_ranges = [(cs, min(cs + block_w - 1, W - 1))
+                            for cs in all_col_starts if 0 <= cs < W]
+        nb_vals = [inp[r][c] for r in range(H) for c in range(W) if inp[r][c] != bg]
+        if not nb_vals:
+            return [list(row) for row in inp]
+        fill_color = Counter(nb_vals).most_common(1)[0][0]
+        out = [list(row) for row in inp]
+        for gr, (br_s, br_e) in enumerate(block_row_ranges):
+            for gc, (bc_s, bc_e) in enumerate(block_col_ranges):
+                if any(inp[r][c] != bg
+                       for r in range(br_s, br_e + 1)
+                       for c in range(bc_s, bc_e + 1)):
+                    continue
+                hole_r = br_s + gr
+                hole_c = bc_s + gc
+                for r in range(br_s, br_e + 1):
+                    for c in range(bc_s, bc_e + 1):
+                        out[r][c] = bg if (r == hole_r and c == hole_c) else fill_color
+        return out
+
     def solve(self, ctx):
+        # GUARD: verify transform on ALL training pairs
+        for pair in ctx.train_pairs:
+            pred = self._transform_one(pair["input"])
+            if pred != pair["output"]:
+                return None
         preds = []
         for test_inp in ctx.test_inputs:
-            H, W = len(test_inp), len(test_inp[0])
-            bg = _bg43(test_inp)
-
-            # Find non-bg rows/cols
-            nz_rows = [r for r in range(H)
-                       if any(test_inp[r][c] != bg for c in range(W))]
-            nz_cols = [c for c in range(W)
-                       if any(test_inp[r][c] != bg for r in range(H))]
-
-            if not nz_rows or not nz_cols:
-                out = [list(row) for row in test_inp]
-                preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                         solver_name=self.name, confidence=0.0))
-                continue
-
-            row_groups = _group_runs(nz_rows)
-            col_groups = _group_runs(nz_cols)
-
-            block_h = Counter(e - s + 1 for s, e in row_groups).most_common(1)[0][0]
-            block_w = Counter(e - s + 1 for s, e in col_groups).most_common(1)[0][0]
-            period_h = block_h + 1
-            period_w = block_w + 1
-
-            # Generate all block row starts from the first observed group
-            first_r = row_groups[0][0]
-            all_row_starts = []
-            r = first_r
-            while r < H:
-                all_row_starts.append(r)
-                r += period_h
-            r = first_r - period_h
-            while r >= 0:
-                all_row_starts.insert(0, r)
-                r -= period_h
-
-            first_c = col_groups[0][0]
-            all_col_starts = []
-            c = first_c
-            while c < W:
-                all_col_starts.append(c)
-                c += period_w
-            c = first_c - period_w
-            while c >= 0:
-                all_col_starts.insert(0, c)
-                c -= period_w
-
-            # Build valid block ranges
-            block_row_ranges = [
-                (rs, min(rs + block_h - 1, H - 1))
-                for rs in all_row_starts if 0 <= rs < H
-            ]
-            block_col_ranges = [
-                (cs, min(cs + block_w - 1, W - 1))
-                for cs in all_col_starts if 0 <= cs < W
-            ]
-
-            # fill_color = most common non-bg color
-            nb_vals = [test_inp[r][c] for r in range(H) for c in range(W)
-                       if test_inp[r][c] != bg]
-            if not nb_vals:
-                out = [list(row) for row in test_inp]
-                preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                         solver_name=self.name, confidence=0.0))
-                continue
-            fill_color = Counter(nb_vals).most_common(1)[0][0]
-
-            out = [list(row) for row in test_inp]
-
-            for gr, (br_s, br_e) in enumerate(block_row_ranges):
-                for gc, (bc_s, bc_e) in enumerate(block_col_ranges):
-                    # Only fill all-bg blocks
-                    if any(test_inp[r][c] != bg
-                           for r in range(br_s, br_e + 1)
-                           for c in range(bc_s, bc_e + 1)):
-                        continue
-                    # Hole position: internal offset (gr, gc) within block
-                    hole_r = br_s + gr
-                    hole_c = bc_s + gc
-                    for r in range(br_s, br_e + 1):
-                        for c in range(bc_s, bc_e + 1):
-                            if r == hole_r and c == hole_c:
-                                out[r][c] = bg    # keep hole
-                            else:
-                                out[r][c] = fill_color
-
+            out = self._transform_one(test_inp)
             preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                     solver_name=self.name, confidence=1.0))
+                                    solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 @register_solver
 class ColorToColumnSolver(BaseSolver):
-    """Learns a color→column mapping from training pairs, then applies it.
-    Training: for each input row with a non-bg value v at col 0, find which
-    output column c contains value v → learn map {v: c}.
-    Test: for each non-bg col-0 value v, place v at (r, color_col[v]) in output.
+    """Learns a color->column mapping from training pairs, then applies it.
     Target: f45f5ca7
     """
 
@@ -258,11 +203,10 @@ class ColorToColumnSolver(BaseSolver):
     def name(self):
         return "ColorToColumnSolver"
 
-    def solve(self, ctx):
-        # ── Learn color→column from training ──────────────────────────────
+    def _learn(self, train_pairs):
         color_col = {}
-        for pair in ctx.train_pairs:
-            inp, out = pair['input'], pair['output']
+        for pair in train_pairs:
+            inp, out = pair["input"], pair["output"]
             bg_in = _bg43(inp)
             H_i = len(inp)
             W_o = len(out[0]) if out else 0
@@ -273,32 +217,41 @@ class ColorToColumnSolver(BaseSolver):
                         if out[r][c] == v:
                             color_col[v] = c
                             break
+        return color_col
 
+    def _apply_one(self, inp, color_col):
+        H, W = len(inp), len(inp[0])
+        bg = _bg43(inp)
+        out = [[bg] * W for _ in range(H)]
+        for r in range(H):
+            v = inp[r][0]
+            if v != bg:
+                if v in color_col and 0 <= color_col[v] < W:
+                    out[r][color_col[v]] = v
+                elif 0 <= v < W:
+                    out[r][v] = v
+        return out
+
+    def solve(self, ctx):
+        color_col = self._learn(ctx.train_pairs)
+        if not color_col:
+            return None
+        # GUARD: verify mapping on ALL training pairs
+        for pair in ctx.train_pairs:
+            pred = self._apply_one(pair["input"], color_col)
+            if pred != pair["output"]:
+                return None
         preds = []
         for test_inp in ctx.test_inputs:
-            H, W = len(test_inp), len(test_inp[0])
-            bg = _bg43(test_inp)
-            out = [[bg] * W for _ in range(H)]
-            for r in range(H):
-                v = test_inp[r][0]
-                if v != bg:
-                    if v in color_col and 0 <= color_col[v] < W:
-                        out[r][color_col[v]] = v
-                    elif 0 <= v < W:
-                        # fallback: old identity mapping
-                        out[r][v] = v
+            out = self._apply_one(test_inp, color_col)
             preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                     solver_name=self.name, confidence=1.0))
+                                    solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
 @register_solver
 class FillTowardCenterSolver(BaseSolver):
     """Fills the gap between two colored objects symmetrically toward center.
-    mid = (gap_start + gap_end) // 2.
-    Odd gap: A fills [gap_s, mid-1], mid stays bg, B fills [mid+1, gap_e].
-    Even gap: A fills [gap_s, mid], B fills [mid+1, gap_e].
-    Handles both horizontal (h) and vertical (v) gap orientations.
     Target: d968ffd4
     """
 
@@ -307,68 +260,69 @@ class FillTowardCenterSolver(BaseSolver):
         return "FillTowardCenterSolver"
 
     @staticmethod
-    def _apply_fill(out, gap_s, gap_e, col_a, col_b, H, W, axis):
+    def _apply_fill_gaps(out, gap_s, gap_e, col_a, col_b, H, W, axis):
         gap_len = gap_e - gap_s + 1
         if gap_len <= 0:
             return
         mid = (gap_s + gap_e) // 2
         for idx in range(gap_s, gap_e + 1):
-            if gap_len % 2 == 1:   # odd: divider at mid stays bg
+            if gap_len % 2 == 1:
                 if idx < mid:
                     fill = col_a
                 elif idx > mid:
                     fill = col_b
                 else:
-                    continue        # mid stays bg
-            else:                   # even: A claims mid, B claims mid+1
+                    continue
+            else:
                 fill = col_a if idx <= mid else col_b
-            if axis == 'h':
+            if axis == "h":
                 for r in range(H):
                     out[r][idx] = fill
             else:
                 for c in range(W):
                     out[idx][c] = fill
 
+    def _transform_one(self, inp):
+        H, W = len(inp), len(inp[0])
+        bg = _bg43(inp)
+        ccs = _bfs_ccs43(inp, bg)
+        out = [list(row) for row in inp]
+        if len(ccs) < 2:
+            return out
+        ccs_s = sorted(ccs, key=lambda x: len(x[1]), reverse=True)
+        col_a, cells_a = ccs_s[0]
+        col_b, cells_b = ccs_s[1]
+        max_col_a = max(c for r, c in cells_a)
+        min_col_b = min(c for r, c in cells_b)
+        max_col_b = max(c for r, c in cells_b)
+        min_col_a = min(c for r, c in cells_a)
+        max_row_a = max(r for r, c in cells_a)
+        min_row_b = min(r for r, c in cells_b)
+        max_row_b = max(r for r, c in cells_b)
+        min_row_a = min(r for r, c in cells_a)
+        if max_col_a < min_col_b:
+            self._apply_fill_gaps(out, max_col_a + 1, min_col_b - 1,
+                                   col_a, col_b, H, W, "h")
+        elif max_col_b < min_col_a:
+            self._apply_fill_gaps(out, max_col_b + 1, min_col_a - 1,
+                                   col_b, col_a, H, W, "h")
+        elif max_row_a < min_row_b:
+            self._apply_fill_gaps(out, max_row_a + 1, min_row_b - 1,
+                                   col_a, col_b, H, W, "v")
+        elif max_row_b < min_row_a:
+            self._apply_fill_gaps(out, max_row_b + 1, min_row_a - 1,
+                                   col_b, col_a, H, W, "v")
+        return out
+
     def solve(self, ctx):
+        # GUARD: verify transform on ALL training pairs
+        for pair in ctx.train_pairs:
+            pred = self._transform_one(pair["input"])
+            if pred != pair["output"]:
+                return None
         preds = []
         for test_inp in ctx.test_inputs:
-            H, W = len(test_inp), len(test_inp[0])
-            bg = _bg43(test_inp)
-            ccs = _bfs_ccs43(test_inp, bg)
-            out = [list(row) for row in test_inp]
-
-            if len(ccs) < 2:
-                preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                         solver_name=self.name, confidence=0.0))
-                continue
-
-            # Use two largest CCs
-            ccs_s = sorted(ccs, key=lambda x: len(x[1]), reverse=True)
-            col_a, cells_a = ccs_s[0]
-            col_b, cells_b = ccs_s[1]
-
-            max_col_a = max(c for r, c in cells_a)
-            min_col_b = min(c for r, c in cells_b)
-            max_col_b = max(c for r, c in cells_b)
-            min_col_a = min(c for r, c in cells_a)
-            max_row_a = max(r for r, c in cells_a)
-            min_row_b = min(r for r, c in cells_b)
-            max_row_b = max(r for r, c in cells_b)
-            min_row_a = min(r for r, c in cells_a)
-
-            if max_col_a < min_col_b:                              # A left, B right
-                self._apply_fill(out, max_col_a + 1, min_col_b - 1,
-                                 col_a, col_b, H, W, 'h')
-            elif max_col_b < min_col_a:                            # B left, A right
-                self._apply_fill(out, max_col_b + 1, min_col_a - 1,
-                                 col_b, col_a, H, W, 'h')
-            elif max_row_a < min_row_b:                            # A top, B bottom
-                self._apply_fill(out, max_row_a + 1, min_row_b - 1,
-                                 col_a, col_b, H, W, 'v')
-            elif max_row_b < min_row_a:                            # B top, A bottom
-                self._apply_fill(out, max_row_b + 1, min_row_a - 1,
-                                 col_b, col_a, H, W, 'v')
-
+            out = self._transform_one(test_inp)
             preds.append(Prediction(attempt_1=out, attempt_2=out,
-                                     solver_name=self.name, confidence=1.0))
+                                    solver_name=self.name, confidence=1.0))
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)

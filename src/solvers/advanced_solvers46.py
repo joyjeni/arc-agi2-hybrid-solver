@@ -166,6 +166,7 @@ class ReplaceUniqueColorWithUniversalSolver(BaseSolver):
         return "ReplaceUniqueColorWithUniversalSolver"
 
     def solve(self, ctx):
+        return None  # DISABLED: 0 correct, only producing wrong predictions
         pairs = [(p['input'], p['output']) for p in ctx.train_pairs]
         if len(pairs) < 2:
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
@@ -180,6 +181,9 @@ class ReplaceUniqueColorWithUniversalSolver(BaseSolver):
             if len(extra) != 1:
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
             extra_color = next(iter(extra))
+            # Guard: output must match input dimensions
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
             # Find what color replaces extra_color
             replacements = set()
             for r in range(len(inp)):
@@ -327,6 +331,7 @@ class SwapTwoCellPositionsSolver(BaseSolver):
         return None
 
     def solve(self, ctx):
+        return None  # DISABLED: 0 correct, only producing wrong predictions
         pairs = [(p['input'], p['output']) for p in ctx.train_pairs]
         if not pairs:
             return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
@@ -564,12 +569,16 @@ class FillInteriorBgWithColorSolver(BaseSolver):
         any_change = False
 
         for inp, out in pairs:
+            # Guard: output must match input dimensions
+            if len(inp) != len(out) or len(inp[0]) != len(out[0]):
+                return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
             bg = _46_bg(inp)
             enclosed = self._enclosed_bg_cells(inp, bg)
             if not enclosed:
                 continue
             # Find what color the enclosed cells became
-            fill_colors = {out[r][c] for r, c in enclosed}
+            fill_colors = {out[r][c] for r, c in enclosed
+                           if r < len(out) and c < len(out[r])}
             if len(fill_colors) != 1:
                 return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=3)
             fc = next(iter(fill_colors))

@@ -440,6 +440,14 @@ class FillBorderReachableV2Solver(BaseSolver):
         if not fill_cs or len(set(fill_cs)) != 1:
             return SolverResult(ctx.task_id, [], False, 2)
         fc = fill_cs[0]
+        # GUARD: final full-output check on all training pairs
+        for p in ctx.train_pairs:
+            ia = _G(p["input"]).copy()
+            bg = _45_bg(p["input"])
+            for r, c in _45_reach(ia, bg):
+                ia[r, c] = fc
+            if ia.tolist() != p["output"]:
+                return SolverResult(ctx.task_id, [], False, 2)
         preds = []
         for t in ctx.test_inputs:
             ia = _G(t).copy()
@@ -476,14 +484,31 @@ class FillInteriorBgSolver(BaseSolver):
             if len(fcs) != 1:
                 return SolverResult(ctx.task_id, [], False, 2)
             fc = list(fcs)[0]
+            # GUARD: ALL interior cells must become exactly fc in output
+            for r, c in interior:
+                if int(o[r, c]) != fc:
+                    return SolverResult(ctx.task_id, [], False, 2)
+            # GUARD: non-interior cells must be unchanged
+            interior_set = set(interior)
             for r in range(i.shape[0]):
                 for c in range(i.shape[1]):
-                    if (r, c) not in set(interior) and int(i[r, c]) != int(o[r, c]):
+                    if (r, c) not in interior_set and int(i[r, c]) != int(o[r, c]):
                         return SolverResult(ctx.task_id, [], False, 2)
             fill_cs.append(fc)
         if not fill_cs or len(set(fill_cs)) != 1:
             return SolverResult(ctx.task_id, [], False, 2)
         fc = fill_cs[0]
+        # GUARD: full reconstruction check on all training pairs
+        for p in ctx.train_pairs:
+            ia = _G(p['input']).copy()
+            bg = _45_bg(p['input'])
+            reach = _45_reach(ia, bg)
+            for r in range(ia.shape[0]):
+                for c in range(ia.shape[1]):
+                    if int(ia[r, c]) == bg and (r, c) not in reach:
+                        ia[r, c] = fc
+            if ia.tolist() != p['output']:
+                return SolverResult(ctx.task_id, [], False, 2)
         preds = []
         for t in ctx.test_inputs:
             ia = _G(t).copy()

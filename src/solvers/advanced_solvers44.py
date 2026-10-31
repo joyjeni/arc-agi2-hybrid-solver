@@ -485,9 +485,14 @@ class RecolorByObjectSizeSolver(BaseSolver):
             a = _44_arr(ti)
             bg = _44_bg(a)
             pred = np.full_like(a, bg)
-            for cc in _44_ccs(a, bg):
+            ccs = _44_ccs(a, bg)
+            # Reject if any test object size is not in the learned map
+            for cc in ccs:
+                if len(cc) not in size_map:
+                    return SolverResult(task_id=ctx.task_id, predictions=[], solved=False, tier=2)
+            for cc in ccs:
                 size = len(cc)
-                col = size_map.get(size, bg)
+                col = size_map[size]
                 for r, c in cc:
                     pred[r, c] = col
             preds.append(Prediction(attempt_1=_44_lst(pred), attempt_2=_44_lst(pred),
