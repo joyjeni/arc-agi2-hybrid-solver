@@ -158,6 +158,10 @@ _TRANSFORM_OPS = [
                   lambda g: _np_aug.rot90(_np_aug.array(g), -3).tolist()),
     ("fliplr",    lambda g: _np_aug.fliplr(_np_aug.array(g)).tolist(),
                   lambda g: _np_aug.fliplr(_np_aug.array(g)).tolist()),
+    ("flipud",    lambda g: _np_aug.flipud(_np_aug.array(g)).tolist(),
+                  lambda g: _np_aug.flipud(_np_aug.array(g)).tolist()),
+    ("transpose", lambda g: _np_aug.array(g).T.tolist(),
+                  lambda g: _np_aug.array(g).T.tolist()),
 ]
 
 
@@ -793,7 +797,7 @@ def worker_inference(
                             pad_token_id=tokenizer.eos_token_id,
                         )
                     gen = tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
-                    attempt_1 = parse_grid(gen, None)
+                    attempt_1 = parse_grid(gen, ref_shape)
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} direct err: {exc}", flush=True)
 
@@ -813,7 +817,7 @@ def worker_inference(
                             pad_token_id=tokenizer.eos_token_id,
                         )
                     gen2 = tokenizer.decode(out2[0][ids2.shape[-1]:], skip_special_tokens=True)
-                    attempt_2 = parse_grid(gen2, None)
+                    attempt_2 = parse_grid(gen2, ref_shape)
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} nvarc_s2 err: {exc}", flush=True)
 
@@ -846,7 +850,7 @@ def worker_inference(
                             _et_gen  = tokenizer.decode(
                                 _et_out[0][_ids_e.shape[-1]:], skip_special_tokens=True
                             )
-                            _et_grid = parse_grid(_et_gen, None)
+                            _et_grid = parse_grid(_et_gen, ref_shape)
                             if _et_grid is not None:
                                 _ens_cands.append(_et_grid)
                         # Vote for best attempt_1; rank by demo-consistency for attempt_2
@@ -892,7 +896,7 @@ def worker_inference(
                                 pad_token_id=tokenizer.eos_token_id,
                             )
                         gen3 = tokenizer.decode(out3[0][ids3.shape[-1]:], skip_special_tokens=True)
-                        fb = parse_grid(gen3, None)
+                        fb = parse_grid(gen3, ref_shape)
                         if attempt_1 is None:
                             attempt_1 = fb
                         if attempt_2 is None:
@@ -919,7 +923,7 @@ def worker_inference(
                                 pad_token_id=tokenizer.eos_token_id,
                             )
                         gen4 = tokenizer.decode(out4[0][ids4.shape[-1]:], skip_special_tokens=True)
-                        fb4 = parse_grid(gen4, None)
+                        fb4 = parse_grid(gen4, ref_shape)
                         if attempt_1 is None:
                             attempt_1 = fb4
                         if attempt_2 is None:
@@ -944,7 +948,7 @@ def worker_inference(
                                 do_sample=False, temperature=None, top_p=None,
                                 pad_token_id=tokenizer.eos_token_id)
                         _fs_gen  = tokenizer.decode(_fs_out[0][_fs_ids.shape[-1]:], skip_special_tokens=True)
-                        _fs_grid = parse_grid(_fs_gen, None)
+                        _fs_grid = parse_grid(_fs_gen, ref_shape)
                         attempt_1 = _fs_grid
                         attempt_2 = _fs_grid
                     except Exception as _fs_exc:
@@ -979,7 +983,7 @@ def worker_inference(
                                     pad_token_id=tokenizer.eos_token_id,
                                 )
                             _aug_gen  = tokenizer.decode(_aug_out[0][_aug_ids.shape[-1]:], skip_special_tokens=True)
-                            _aug_grid = parse_grid(_aug_gen, None)
+                            _aug_grid = parse_grid(_aug_gen, _aug_shape)
                             if _aug_grid is not None:
                                 _restored = _inv(_aug_grid)
                                 if not _is_valid_result(attempt_1, inp):

@@ -360,7 +360,7 @@ def recursive_trm_loop(
 
             # SFT structural layout — ARCDSL primitives declared in system preamble
             prompt = (
-                "<|user|>\nYou are an automated computer science logic engineer "
+                "<|im_start|>user\nYou are an automated computer science logic engineer "
                 "synthesizing Python code for ARC puzzles.\n"
                 "Write a Python function `transform(grid: list[list[int]]) -> list[list[int]]` "
                 "utilizing numpy.\n\n"
@@ -397,7 +397,7 @@ def recursive_trm_loop(
                 )
             prompt += (
                 "Output the pure Python code block enclosed in ```python and ```.\n"
-                "<|assistant|>\n"
+                "<|im_end|>\n<|im_start|>assistant\n"
             )
 
             # 2. Tokenise + context eviction (Duck Harness OOM guard)
@@ -592,6 +592,10 @@ _TRANSFORM_OPS = [
                  lambda g: _np_aug.rot90(_np_aug.array(g), -3).tolist()),
     ("fliplr",   lambda g: _np_aug.fliplr(_np_aug.array(g)).tolist(),
                  lambda g: _np_aug.fliplr(_np_aug.array(g)).tolist()),
+    ("flipud",   lambda g: _np_aug.flipud(_np_aug.array(g)).tolist(),
+                 lambda g: _np_aug.flipud(_np_aug.array(g)).tolist()),
+    ("transpose", lambda g: _np_aug.array(g).T.tolist(),
+                  lambda g: _np_aug.array(g).T.tolist()),
 ]
 
 
@@ -902,7 +906,7 @@ def worker_process(
                         logits_processor=_arc_lp_list,
                     )
                 _gen1   = tokenizer.decode(_out1[0][_ids1.shape[-1]:], skip_special_tokens=True)
-                attempt_1 = parse_grid(_gen1, None)
+                attempt_1 = parse_grid(_gen1, ref_shape)
                 if _is_valid_result(attempt_1, inp):
                     _candidates.append(attempt_1)
             except Exception as exc:
@@ -936,7 +940,7 @@ def worker_process(
                         logits_processor=_arc_lp_list,
                     )
                 _gen2   = tokenizer.decode(_out2[0][_ids2.shape[-1]:], skip_special_tokens=True)
-                attempt_2 = parse_grid(_gen2, None)
+                attempt_2 = parse_grid(_gen2, ref_shape)
                 if _is_valid_result(attempt_2, inp):
                     _candidates.append(attempt_2)
             except Exception as exc:
@@ -964,7 +968,7 @@ def worker_process(
                             logits_processor=_arc_lp_list,
                         )
                     _gen3 = tokenizer.decode(_out3[0][_ids3.shape[-1]:], skip_special_tokens=True)
-                    _fb3  = parse_grid(_gen3, None)
+                    _fb3  = parse_grid(_gen3, ref_shape)
                     if _is_valid_result(_fb3, inp):
                         _candidates.append(_fb3)
                     if attempt_1 is None:
@@ -996,7 +1000,7 @@ def worker_process(
                             logits_processor=_arc_lp_list,
                         )
                     _gen4 = tokenizer.decode(_out4[0][_ids4.shape[-1]:], skip_special_tokens=True)
-                    _fb4  = parse_grid(_gen4, None)
+                    _fb4  = parse_grid(_gen4, ref_shape)
                     if _is_valid_result(_fb4, inp):
                         _candidates.append(_fb4)
                     if attempt_1 is None:
@@ -1034,7 +1038,8 @@ def worker_process(
                         _aug_gen  = tokenizer.decode(
                             _aug_out[0][_aug_ids.shape[-1]:], skip_special_tokens=True
                         )
-                        _aug_grid = parse_grid(_aug_gen, None)
+                        _aug_shape = (len(_aug_inp), len(_aug_inp[0])) if _aug_inp and _aug_inp[0] else ref_shape
+                        _aug_grid = parse_grid(_aug_gen, _aug_shape)
                         if _aug_grid is not None:
                             _restored = _inv(_aug_grid)
                             if _is_valid_result(_restored, inp):
@@ -1146,7 +1151,7 @@ def worker_process(
                     _gen_dv = tokenizer.decode(
                         _out_dv[0][_ids_dv.shape[-1]:], skip_special_tokens=True
                     )
-                    _dv_grid = parse_grid(_gen_dv, None)
+                    _dv_grid = parse_grid(_gen_dv, ref_shape)
                     if _is_valid_result(_dv_grid, inp) and _dv_grid != attempt_1:
                         attempt_2 = _dv_grid
                         print(
