@@ -129,7 +129,8 @@ class ReflectFillSolver(BaseSolver):
         return SolverResult(task_id=ctx.task_id, predictions=preds, solved=True, tier=2)
 
 
-@register_solver
+# Not registered: on the 120 public evaluation tasks it gave 53 answers, all wrong.
+# It looks answers up from the training pairs, so the training-output check cannot catch it.
 class ColorCanonicalLookupSolver(BaseSolver):
     """
     Tasks d4469b4b, 9110e3c5: build dominant_nonzero(train_input)→train_output map.

@@ -38,6 +38,7 @@ import random
 import signal
 import torch
 import torch.multiprocessing as mp
+import numpy as np
 
 
 # ── Color map ─────────────────────────────────────────────────────────────────
@@ -127,15 +128,11 @@ def parse_grid(text: str, ref_shape: Optional[tuple] = None) -> Optional[list]:
         if any(v < 0 or v > 9 for v in row):
             return None
 
-    # Clip / pad to ref_shape
-    if ref_shape is not None:
-        h, w = ref_shape
-        rows = rows[:h]
-        rows = [r[:w] + [0] * max(0, w - len(r)) for r in rows]
-        while len(rows) < h:
-            rows.append([0] * w)
-
-    return rows if rows else None
+    # ref_shape is accepted for compatibility but never used to pad or clip: the
+    # answer's size often differs from the input's, and padding with 0 makes it wrong.
+    if not rows or len(rows) > 30 or len(rows[0]) > 30:
+        return None
+    return rows
 
 
 
@@ -424,20 +421,14 @@ def _trm_extract_code(model_output: str) -> str:
 def verify_program_robustness(repl, code_str, train_pairs):
     """
     Validate a generated transform() against all training pairs.
-    Also tests D4 rotational symmetry to reject brittle programs.
     Returns (passed: bool, reason: str).
+    No rotation test: many ARC rules depend on direction (gravity, "extend right"),
+    so a correct program can fail on a rotated pair.
     """
     for idx, pair in enumerate(train_pairs):
         base_res = repl.execute_code(code_str, pair["input"])
         if base_res is None or base_res != pair["output"]:
             return False, f"Fails base pair verification on step {idx + 1}"
-        try:
-            rot_in  = np.rot90(np.array(pair["input"]),  1).tolist()
-            rot_out = np.rot90(np.array(pair["output"]), 1).tolist()
-            if repl.execute_code(code_str, rot_in) != rot_out:
-                return False, f"Fails D4 rotational symmetry on pair {idx + 1}"
-        except Exception:
-            return False, "Symmetry validation parse fault"
     return True, "OK"
 
 
@@ -1370,3 +1361,4 @@ def main() -> None:
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     main()
+

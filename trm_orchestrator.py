@@ -239,8 +239,9 @@ def verify_program_robustness(
 ) -> Tuple[bool, str]:
     """
     Validate a generated transform() against all training pairs.
-    Also tests D4 rotational invariance to reject brittle programs.
     Returns (passed: bool, reason: str).
+    No rotation test: many ARC rules depend on direction (gravity, "extend right"),
+    so a correct program can fail on a rotated pair.
     """
     for idx, pair in enumerate(train_pairs):
         base_res = repl.execute_code(code_str, pair["input"])
@@ -249,18 +250,6 @@ def verify_program_robustness(
                 False,
                 f"Fails structural target reconstruction mapping on training instance {idx+1}",
             )
-        try:
-            rot_in  = np.rot90(np.array(pair["input"]),  1).tolist()
-            rot_out = np.rot90(np.array(pair["output"]), 1).tolist()
-            rot_res = repl.execute_code(code_str, rot_in)
-            if rot_res is None or rot_res != rot_out:
-                return (
-                    False,
-                    f"Fails rotational invariance test on instance {idx+1} "
-                    "(logic is too grid-locked)",
-                )
-        except Exception:
-            return False, "Symmetry interpolation transformation error"
     return True, "Passed complete robustness validation matrix"
 
 
@@ -566,14 +555,13 @@ def parse_grid(text: str, ref_shape: Optional[tuple] = None) -> Optional[list]:
     if not rows:
         return None
 
-    # Clip / pad to ref_shape
-    if ref_shape is not None:
-        h, w = ref_shape
-        rows = rows[:h]
-        rows = [r[:w] + [0] * max(0, w - len(r)) for r in rows]
-        while len(rows) < h:
-            rows.append([0] * w)
-
+    # Keep the most common row length (drops stray text lines)
+    most_common_len = Counter(len(r) for r in rows).most_common(1)[0][0]
+    rows = [r for r in rows if len(r) == most_common_len]
+    # ref_shape is accepted for compatibility but never used to pad or clip: the
+    # answer's size often differs from the input's, and padding with 0 makes it wrong.
+    if not rows or len(rows) > 30 or len(rows[0]) > 30:
+        return None
     return rows
 
 
@@ -1566,3 +1554,4 @@ def main() -> None:
 if __name__ == "__main__":
     mp.set_start_method("spawn", force=True)
     main()
+

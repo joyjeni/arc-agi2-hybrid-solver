@@ -8,8 +8,8 @@ import json, bz2, base64, os
 NOTEBOOK  = "notebooks/arc_jeni_submission.ipynb"
 SRC_ROOT  = "src"
 
-# All files to include (relative to src/, mapped to bundle key)
-# Bundle keys are RELATIVE to jeni_dsa/ (i.e. no "src/" prefix)
+# All files to include, relative to src/. Bundle keys get the "src/" prefix, because
+# the modules import each other as src.* and cell A unpacks keys under jeni_dsa/.
 SRC_FILES = [
     ("__init__.py",),
     ("core/__init__.py",),
@@ -90,8 +90,8 @@ def build_bundle():
             missing.append(rel_path)
             continue
         with open(abs_path, encoding="utf-8") as f:
-            bundle[rel_path] = f.read()
-        print(f"  + {rel_path} ({len(bundle[rel_path])} chars)")
+            bundle["src/" + rel_path] = f.read()
+        print(f"  + src/{rel_path} ({len(bundle['src/' + rel_path])} chars)")
     if missing:
         print(f"\nWARNING: {len(missing)} files not found: {missing}")
     raw = json.dumps(bundle).encode("utf-8")
@@ -104,14 +104,18 @@ def update_notebook(encoded):
     with open(NOTEBOOK, encoding="utf-8") as f:
         nb = json.load(f)
 
-    cell11 = nb["cells"][11]
+    # The bundle cell is the one code cell that assigns _BUNDLE (cell 11 today).
+    cells = [c for c in nb["cells"] if c["cell_type"] == "code"
+             and "\n_BUNDLE = (\n" in "".join(c["source"])]
+    if len(cells) != 1:
+        raise RuntimeError(f"expected exactly one cell with _BUNDLE, found {len(cells)}")
+    cell11 = cells[0]
     src = "".join(cell11["source"])
 
-    # Find the _BUNDLE = (...) block
-    bundle_start = src.find("_BUNDLE = (\n")
-    bundle_end_marker = "\n)\n_files = json.loads"
-    bundle_end = src.find(bundle_end_marker)
-    if bundle_start < 0 or bundle_end < 0:
+    # Find the _BUNDLE = (...) block: from its first line to the first line that is ")"
+    bundle_start = src.find("\n_BUNDLE = (\n") + 1
+    bundle_end = src.find("\n)\n", bundle_start)
+    if bundle_start <= 0 or bundle_end < 0:
         raise RuntimeError(f"Cannot find _BUNDLE markers. start={bundle_start}, end={bundle_end}")
 
     # Build new bundle lines (76 chars per line)
