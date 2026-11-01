@@ -8,11 +8,11 @@ Each worker process loads Qwen3-4B on its own GPU and processes a slice of tasks
 Output: /kaggle/working/jeni_llm_preds.json
   Format: {task_id: [{attempt_1: [[int,...]], attempt_2: [[int,...]]}, ...]}
 
-Design:
-  • attempt_1 ← greedy direct-digit prompt  (temperature=0)
-  • attempt_2 ← chain-of-thought prompt      (temperature=0.7, sampled)
-  • fallback   ← compact-digit prompt        (temperature=0.4) when either failed
-  • hard fallback ← copy of test input       when all parsing fails
+Design (matches SFT training format):
+  • attempt_1 ← greedy NVARC-format (T=0, compact multi-turn, no system msg)
+  • attempt_2 ← compact+CoT (T=0.7, thinking mode, 512 tok reason)
+  • fallback   ← compact prompt (T=0.4) when either failed
+  • hard fallback ← copy of test input when all parsing fails
 
 Merge priority in the notebook's merge cell:
   1. NVARC submission.json  → attempt_1   (highest trust)
@@ -61,6 +61,18 @@ def grid_to_colored(grid: list) -> str:
         " ".join(COLOR_NAMES.get(c, str(c)) for c in row) for row in grid
     )
 
+
+
+def convert_grid_to_string(grid) -> str:
+    """NVARC/SFT format: rows of compact digits separated by newlines (no spaces).
+    Matches the exact format the qwen3_4b_grids15_sft139 model was SFT-trained on.
+    """
+    text = ""
+    for row in grid:
+        for cell in row:
+            text += str(int(cell))
+        text += "\n"
+    return text.strip()
 
 def parse_grid(text: str, ref_shape: Optional[tuple] = None) -> Optional[list]:
     """
@@ -202,8 +214,20 @@ def make_prompt(task_view: dict, style: str) -> tuple[str, str]:
         parts.append(f"\nTest input:\n{grid_to_colored(test_input)}")
         parts.append("\nOutput (digits only):")
 
+
+    elif style == "nvarc":
+        # Exact SFT training format: multi-turn, no system msg, compact grids
+        # Each train pair = one user turn (input) + one assistant turn (output)
+        # Returns ("", messages_list) — caller must handle list case
+        messages = []
+        for ex in train:
+            messages.append({"role": "user",      "content": convert_grid_to_string(ex["input"])})
+            messages.append({"role": "assistant",  "content": convert_grid_to_string(ex["output"])})
+        messages.append({"role": "user", "content": convert_grid_to_string(test_input)})
+        return ("__NVARC_MULTITURN__", messages)
+
     else:
-        return make_prompt(task_view, "direct")
+        return make_prompt(task_view, "nvarc")
 
     return sys_msg, "\n".join(parts)
 
@@ -276,13 +300,18 @@ def worker_inference(
                 attempt_1: Optional[list] = None
                 attempt_2: Optional[list] = None
 
-                # ── Strategy 1: greedy direct → attempt_1 ────────────────────
+                # ── Strategy 1: greedy NVARC format → attempt_1 ─────────────────
+                # Uses the exact SFT training format: compact multi-turn, no system msg
                 try:
-                    sys_m, usr_m = make_prompt(task_view, "direct")
-                    msgs = [
-                        {"role": "system",  "content": sys_m},
-                        {"role": "user",    "content": usr_m},
-                    ]
+                    _style_ret = make_prompt(task_view, "nvarc")
+                    if _style_ret[0] == "__NVARC_MULTITURN__":
+                        msgs = _style_ret[1]
+                    else:
+                        sys_m, usr_m = _style_ret
+                        msgs = [
+                            {"role": "system", "content": sys_m},
+                            {"role": "user",   "content": usr_m},
+                        ]
                     ids = _apply_chat(tokenizer, msgs, enable_thinking=False).to("cuda:0")
                     with torch.no_grad():
                         out = model.generate(
@@ -481,34 +510,51 @@ def run_llm_fast_pass(
 
 # ── Model discovery ────────────────────────────────────────────────────────────
 
+# Hard-coded Kaggle model mount paths for sorokin/qwen3_4b_grids15_sft139
+# These mirror the NVARC arc_solver.py discovery order exactly.
+_NVARC_MODEL_PATHS = [
+    "/kaggle/input/qwen3_4b_grids15_sft139/transformers/bfloat16/1",
+    "/kaggle/input/models/sorokin/qwen3_4b_grids15_sft139/transformers/bfloat16/1",
+    "/kaggle/input/models/sorokin/qwen3_4b_grids15_sft139/Transformers/bfloat16/1",
+]
+
+
 def discover_model_path() -> str:
     """
-    Find the Qwen3-4B model directory.
-    Priority: ARC_MODEL_PATH env → search /kaggle/input for LM config.
+    Find the sorokin/qwen3_4b_grids15_sft139 model directory.
+    Priority:
+      1. ARC_MODEL_PATH env var (set by Cell 8 env dict)
+      2. Hard-coded Kaggle mount paths (mirrors NVARC arc_solver.py)
+      3. Glob scan /kaggle/input for any config.json with qwen/arc in path
     """
     env_path = os.getenv("ARC_MODEL_PATH", "")
     if env_path and Path(env_path).exists():
+        print(f"[llm-fast] Model via ARC_MODEL_PATH: {env_path}", flush=True)
         return env_path
 
+    # Hard-coded paths first (fastest, most reliable)
+    for p in _NVARC_MODEL_PATHS:
+        if Path(p).is_dir() and Path(p, "config.json").exists():
+            print(f"[llm-fast] Found model at {p}", flush=True)
+            return p
+
+    # Fallback: scan /kaggle/input
     search_root = Path("/kaggle/input")
     if not search_root.exists():
         return ""
 
-    # Walk one level deep to find likely model directories fast
     candidates: list[Path] = []
     for entry in sorted(search_root.rglob("config.json")):
         try:
             cfg = json.loads(entry.read_text())
         except Exception:
             continue
-        # Must look like a language model (has vocab_size or model_type)
         if "vocab_size" in cfg or "model_type" in cfg:
             candidates.append(entry.parent)
 
-    # Prefer paths containing "qwen" or "arc"
     for c in candidates:
         if "qwen" in str(c).lower() or "arc" in str(c).lower():
-            print(f"[llm-fast] Found model at {c}", flush=True)
+            print(f"[llm-fast] Found model (scan) at {c}", flush=True)
             return str(c)
     if candidates:
         print(f"[llm-fast] Using fallback model at {candidates[0]}", flush=True)
