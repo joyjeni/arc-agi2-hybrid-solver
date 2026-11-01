@@ -42,6 +42,9 @@ from . import (
     advanced_solvers33,    # noqa: F401
     advanced_solvers34,    # noqa: F401
     advanced_solvers35,    # noqa: F401
+    advanced_solvers36,    # noqa: F401
+    advanced_solvers37,    # noqa: F401
+    advanced_solvers38,    # noqa: F401
     advanced_solvers42,    # noqa: F401
     advanced_solvers43,    # noqa: F401
     advanced_solvers44,    # noqa: F401
