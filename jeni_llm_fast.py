@@ -320,6 +320,14 @@ def _trm_format_prompt(
     prompt = (
         "<|user|>\nYou are a high-level recursive program synthesizer solving an ARC visual puzzle.\n"
         "Write a Python function named `transform(grid: list[list[int]]) -> list[list[int]]` using numpy.\n\n"
+        "Solving strategies (apply the most relevant one):\n"
+        "• Vedic Anurupyena (proportionality): detect ratio-based scaling / tiling rules.\n"
+        "• Vedic Sunyam Samyasamuccaye (symmetry): find mirror / palindrome / rotation structure.\n"
+        "• Vedic Vilokanam (direct observation): spot the simplest single-rule transform.\n"
+        "• Japanese Kaizen (iterative steps): look for a rule applied cell-by-cell or row-by-row.\n"
+        "• Japanese Kanban (pull-based): each output cell is determined by its colored neighbor.\n"
+        "• Chinese Nine-Palace (九宫格): map 3×3 block spatial relationships and symmetry axes.\n"
+        "• Nature-inspired: detect flood-fill propagation, cellular automata, or fractal self-similarity.\n\n"
     )
     for i, pair in enumerate(task_data["train"]):
         prompt += f"Example {i+1} Input:\n{json.dumps(pair['input'])}\n"
@@ -564,6 +572,7 @@ def worker_inference(
     task_items: list,
     model_path: str,
     worker_out_file: str,
+    deadline: float = 0.0,
 ) -> None:
     """
     Spawned child process: loads model on GPU `rank`, processes task_items,
@@ -571,8 +580,11 @@ def worker_inference(
     """
     os.environ["CUDA_VISIBLE_DEVICES"] = str(rank)
     os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
 
     results: dict = {}
+    random.seed(42 + rank)  # reproducible per-worker inference
 
     try:
         from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: PLC0415
@@ -612,58 +624,44 @@ def worker_inference(
                 # ── A/B override: env var can force a single style ───────────────
                 _FORCE_STYLE = os.getenv("ARC_LLM_FORCE_STYLE", "").strip().lower()
 
-                # ── Strategy 1: greedy NVARC format → attempt_1 ─────────────────
-                # Uses the exact SFT training format: compact multi-turn, no system msg
+                # ── Strategy 1: QwenFormatter SFT format → attempt_1 (greedy) ──────
+                # Model SFT-trained on QwenFormatter format — bypass apply_chat_template.
                 try:
-                    _style_ret = make_prompt(task_view, "nvarc")
-                    if _style_ret[0] == "__NVARC_MULTITURN__":
-                        msgs = _style_ret[1]
-                    else:
-                        sys_m, usr_m = _style_ret
-                        msgs = [
-                            {"role": "system", "content": sys_m},
-                            {"role": "user",   "content": usr_m},
-                        ]
-                    ids = _apply_chat(tokenizer, msgs, enable_thinking=False).to("cuda:0")
+                    from arc_loader import QwenFormatter as _QF1  # noqa: PLC0415
+                    _qf1 = _QF1(tokenizer)
+                    _prompt1 = _qf1.fmt_train(task_view["train"]) + _qf1.fmt_query([panel])
+                    ids = tokenizer(_prompt1, return_tensors="pt").input_ids.to("cuda:0")
                     with torch.no_grad():
                         out = model.generate(
                             ids,
-                            max_new_tokens=512,
+                            max_new_tokens=32 * 31,
                             do_sample=False,
                             temperature=None,
                             top_p=None,
                             pad_token_id=tokenizer.eos_token_id,
                         )
                     gen = tokenizer.decode(out[0][ids.shape[-1]:], skip_special_tokens=True)
-                    attempt_1 = parse_grid(gen, ref_shape)
+                    attempt_1 = parse_grid(gen, None)
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} direct err: {exc}", flush=True)
 
-                # ── Strategy 2: NVARC sampled T=0.8 → attempt_2 ──────────────
-                # SFT model trained exclusively on nvarc format — use same format
-                # with sampling for diversity vs greedy attempt_1
+                # ── Strategy 2: QwenFormatter sampled T=0.8 → attempt_2 diversity ─
                 try:
-                    _style_ret2 = make_prompt(task_view, "nvarc")
-                    if _style_ret2[0] == "__NVARC_MULTITURN__":
-                        msgs2 = _style_ret2[1]
-                    else:
-                        sys_m2, usr_m2 = _style_ret2
-                        msgs2 = [
-                            {"role": "system", "content": sys_m2},
-                            {"role": "user",   "content": usr_m2},
-                        ]
-                    ids2 = _apply_chat(tokenizer, msgs2, enable_thinking=False).to("cuda:0")
+                    from arc_loader import QwenFormatter as _QF2  # noqa: PLC0415
+                    _qf2 = _QF2(tokenizer)
+                    _prompt2 = _qf2.fmt_train(task_view["train"]) + _qf2.fmt_query([panel])
+                    ids2 = tokenizer(_prompt2, return_tensors="pt").input_ids.to("cuda:0")
                     with torch.no_grad():
                         out2 = model.generate(
                             ids2,
-                            max_new_tokens=512,
+                            max_new_tokens=32 * 31,
                             do_sample=True,
                             temperature=0.8,
                             top_p=0.95,
                             pad_token_id=tokenizer.eos_token_id,
                         )
                     gen2 = tokenizer.decode(out2[0][ids2.shape[-1]:], skip_special_tokens=True)
-                    attempt_2 = parse_grid(gen2, ref_shape)
+                    attempt_2 = parse_grid(gen2, None)
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} nvarc_s2 err: {exc}", flush=True)
 
@@ -679,14 +677,14 @@ def worker_inference(
                         with torch.no_grad():
                             out3 = model.generate(
                                 ids3,
-                                max_new_tokens=512,
+                                max_new_tokens=32 * 31,
                                 do_sample=True,
                                 temperature=0.4,
                                 top_p=0.9,
                                 pad_token_id=tokenizer.eos_token_id,
                             )
                         gen3 = tokenizer.decode(out3[0][ids3.shape[-1]:], skip_special_tokens=True)
-                        fb = parse_grid(gen3, ref_shape)
+                        fb = parse_grid(gen3, None)
                         if attempt_1 is None:
                             attempt_1 = fb
                         if attempt_2 is None:
@@ -706,14 +704,14 @@ def worker_inference(
                         with torch.no_grad():
                             out4 = model.generate(
                                 ids4,
-                                max_new_tokens=512,
+                                max_new_tokens=32 * 31,
                                 do_sample=True,
                                 temperature=0.4,
                                 top_p=0.9,
                                 pad_token_id=tokenizer.eos_token_id,
                             )
                         gen4 = tokenizer.decode(out4[0][ids4.shape[-1]:], skip_special_tokens=True)
-                        fb4 = parse_grid(gen4, ref_shape)
+                        fb4 = parse_grid(gen4, None)
                         if attempt_1 is None:
                             attempt_1 = fb4
                         if attempt_2 is None:
@@ -734,11 +732,11 @@ def worker_inference(
                                         {"role": "user",   "content": _fs_usr}]
                         _fs_ids = _apply_chat(tokenizer, _fs_msgs, enable_thinking=False).to("cuda:0")
                         with torch.no_grad():
-                            _fs_out = model.generate(_fs_ids, max_new_tokens=512,
+                            _fs_out = model.generate(_fs_ids, max_new_tokens=32 * 31,
                                 do_sample=False, temperature=None, top_p=None,
                                 pad_token_id=tokenizer.eos_token_id)
                         _fs_gen  = tokenizer.decode(_fs_out[0][_fs_ids.shape[-1]:], skip_special_tokens=True)
-                        _fs_grid = parse_grid(_fs_gen, ref_shape)
+                        _fs_grid = parse_grid(_fs_gen, None)
                         attempt_1 = _fs_grid
                         attempt_2 = _fs_grid
                     except Exception as _fs_exc:
@@ -766,14 +764,14 @@ def worker_inference(
                             with torch.no_grad():
                                 _aug_out = model.generate(
                                     _aug_ids,
-                                    max_new_tokens=512,
+                                    max_new_tokens=32 * 31,
                                     do_sample=False,
                                     temperature=None,
                                     top_p=None,
                                     pad_token_id=tokenizer.eos_token_id,
                                 )
                             _aug_gen  = tokenizer.decode(_aug_out[0][_aug_ids.shape[-1]:], skip_special_tokens=True)
-                            _aug_grid = parse_grid(_aug_gen, _aug_shape)
+                            _aug_grid = parse_grid(_aug_gen, None)
                             if _aug_grid is not None:
                                 _restored = _inv(_aug_grid)
                                 if not _is_valid_result(attempt_1, inp):
@@ -834,6 +832,17 @@ def worker_inference(
 
             results[task_id] = task_preds
 
+            # Incremental save: crash recovery — write after every task
+            try:
+                with open(worker_out_file, "w") as _cf:
+                    json.dump(results, _cf)
+            except Exception:
+                pass
+            # Hard deadline guard
+            if deadline > 0.0 and time.time() > deadline:
+                print(f"[GPU{rank}] Deadline reached after {step+1}/{len(task_items)} tasks.", flush=True)
+                break
+
             if (step + 1) % 10 == 0 or (step + 1) == len(task_items):
                 elapsed = time.time() - t0
                 rate = (step + 1) / max(elapsed, 1e-9)
@@ -862,6 +871,7 @@ def run_llm_fast_pass(
     model_path: str,
     output_path: str,
     n_workers: int = 4,
+    deadline: float = 0.0,
 ) -> int:
     """
     Distribute tasks across n_workers GPU processes.
@@ -890,7 +900,7 @@ def run_llm_fast_pass(
             continue
         p = ctx.Process(
             target=worker_inference,
-            args=(rank, chunks[rank], model_path, worker_files[rank]),
+            args=(rank, chunks[rank], model_path, worker_files[rank], deadline),
             daemon=False,
         )
         p.start()
@@ -1050,7 +1060,8 @@ def main() -> None:
           flush=True)
 
     t0 = time.time()
-    count = run_llm_fast_pass(tasks, model_path, args.output, n_workers=n_workers)
+    _deadline = (args.end_time - 300) if args.end_time is not None else 0.0
+    count = run_llm_fast_pass(tasks, model_path, args.output, n_workers=n_workers, deadline=_deadline)
     elapsed = time.time() - t0
     print(f"[llm-fast] Finished: {count} tasks in {elapsed:.0f}s", flush=True)
 
