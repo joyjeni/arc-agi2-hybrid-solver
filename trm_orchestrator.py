@@ -433,9 +433,11 @@ def recursive_trm_loop(
 
             # 5. Extract code block
             if "```python" in gen_text:
-                current_code = gen_text.split("```python")[1].split("```")[0].strip()
+                _parts_py = gen_text.split("```python")
+                current_code = (_parts_py[1].split("```")[0] if len(_parts_py) > 1 else gen_text).strip()
             elif "```" in gen_text:
-                current_code = gen_text.split("```")[1].split("```")[0].strip()
+                _parts_g = gen_text.split("```")
+                current_code = (_parts_g[1] if len(_parts_g) > 1 else gen_text).strip()
             else:
                 current_code = gen_text.strip()
 

@@ -288,6 +288,7 @@ def run_isolated_gpu_worker(
         torch_dtype=torch.bfloat16,
         device_map="cuda:0",
         trust_remote_code=True,
+        low_cpu_mem_usage=True,  # stream weights; avoid full CPU-RAM staging
     )
     model_sft.eval()
     print(
@@ -311,6 +312,7 @@ def run_isolated_gpu_worker(
                 torch_dtype=torch.bfloat16,
                 device_map="cuda:0",
                 trust_remote_code=True,
+                low_cpu_mem_usage=True,  # prevent mid-load CUDA context corruption
             )
             model_coder.eval()
             print(
@@ -324,7 +326,9 @@ def run_isolated_gpu_worker(
                 flush=True,
             )
             _gc.collect()
+            torch.cuda.synchronize()          # flush all pending ops before OOM retry
             torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats()  # reset fragmentation counters
             try:
                 _bnb_cfg = BitsAndBytesConfig(load_in_8bit=True)
                 model_coder = AutoModelForCausalLM.from_pretrained(
@@ -332,6 +336,7 @@ def run_isolated_gpu_worker(
                     quantization_config=_bnb_cfg,
                     device_map="cuda:0",
                     trust_remote_code=True,
+                    low_cpu_mem_usage=True,  # minimise host-side staging on retry
                 )
                 model_coder.eval()
                 print(
