@@ -1334,6 +1334,11 @@ _NVARC_MODEL_PATHS = [
     "/kaggle/input/models/sorokin/qwen3_4b_grids15_sft139/Transformers/bfloat16/1",
 ]
 
+_CODER_FALLBACK_PATHS: list = [
+    "/kaggle/input/qwen2.5-coder-7b-instruct/transformers/default/1",
+    "/kaggle/input/models/qwen/qwen2.5-coder-7b-instruct/transformers/default/1",
+]
+
 
 def discover_model_path() -> str:
     """
@@ -1379,6 +1384,87 @@ def discover_model_path() -> str:
     return ""
 
 
+def discover_competition_models() -> tuple:
+    """
+    Scan /kaggle/input dynamically for both the Coder and SFT model directories.
+
+    Priority per model:
+      1. Glob scan /kaggle/input rglob("config.json") — validates model metadata.
+      2. Hardcoded fallback paths (_CODER_FALLBACK_PATHS / _NVARC_MODEL_PATHS).
+      3. Env var ARC_MODEL_PATH used as SFT override when set.
+
+    Returns:
+        (coder_path, sft_path) — either may be "" if not found.
+    """
+    coder_path: str = ""
+    sft_path:   str = ""
+
+    # Env var override for SFT (highest priority)
+    _env = os.getenv("ARC_MODEL_PATH", "")
+    if _env and Path(_env).exists():
+        sft_path = _env
+        print(f"[trm] SFT via ARC_MODEL_PATH: {sft_path}", flush=True)
+
+    search_root = Path("/kaggle/input")
+    if search_root.exists():
+        for _cfg_file in sorted(search_root.rglob("config.json")):
+            _parent = str(_cfg_file.parent).lower()
+            try:
+                _cfg = json.loads(_cfg_file.read_text())
+            except Exception:
+                continue
+            # Only accept files that look like a real model config
+            if "model_type" not in _cfg and "vocab_size" not in _cfg:
+                continue
+            if not coder_path and (
+                "coder" in _parent or "qwen2.5-coder" in _parent
+            ):
+                coder_path = str(_cfg_file.parent)
+                print(f"[trm] Coder model found: {coder_path}", flush=True)
+            if not sft_path and (
+                "grids15" in _parent or "sorokin" in _parent
+            ):
+                sft_path = str(_cfg_file.parent)
+                print(f"[trm] SFT model found:   {sft_path}", flush=True)
+            if coder_path and sft_path:
+                break
+
+    # Fallback: hardcoded coder paths
+    if not coder_path:
+        for _p in _CODER_FALLBACK_PATHS:
+            if Path(_p).is_dir() and Path(_p, "config.json").exists():
+                coder_path = _p
+                print(f"[trm] Coder model (fallback): {coder_path}", flush=True)
+                break
+
+    # Fallback: hardcoded SFT paths
+    if not sft_path:
+        for _p in _NVARC_MODEL_PATHS:
+            if Path(_p).is_dir() and Path(_p, "config.json").exists():
+                sft_path = _p
+                print(f"[trm] SFT model (fallback):   {sft_path}", flush=True)
+                break
+
+    # Last resort: full scan (any valid model config)
+    if not sft_path and search_root.exists():
+        for _cfg_file in sorted(search_root.rglob("config.json")):
+            try:
+                _cfg = json.loads(_cfg_file.read_text())
+            except Exception:
+                continue
+            if "vocab_size" in _cfg or "model_type" in _cfg:
+                sft_path = str(_cfg_file.parent)
+                print(f"[trm] SFT model (last-resort scan): {sft_path}", flush=True)
+                break
+
+    if not coder_path:
+        print(f"[trm] WARNING: Coder model path not found.", flush=True)
+    if not sft_path:
+        print(f"[trm] WARNING: SFT model path not found.", flush=True)
+
+    return coder_path, sft_path
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # CLI ENTRY
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1415,8 +1501,10 @@ def main() -> None:
             Path(args.output).write_text("{}")
             return
 
-    # Model path
-    model_path = args.model_path or discover_model_path()
+    # Model path — use discover_competition_models() so both models are resolved
+    # in one scan pass; trm_orchestrator uses only the SFT path.
+    _disc_coder, _disc_sft = discover_competition_models()
+    model_path = args.model_path or _disc_sft
     if not model_path or not Path(model_path).exists():
         print("[trm] ERROR: model not found. Set --model-path or ARC_MODEL_PATH.", flush=True)
         sys.exit(1)
