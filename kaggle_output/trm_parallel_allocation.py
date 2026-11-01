@@ -175,6 +175,7 @@ def run_isolated_gpu_worker(
         AutoModelForCausalLM,
         AutoTokenizer,
         BitsAndBytesConfig,
+        LogitsProcessorList,
     )
 
     # ── Limit VRAM to 90% of device capacity ─────────────────────────────────
@@ -207,6 +208,9 @@ def run_isolated_gpu_worker(
             grid_to_compact,
             grid_to_colored,
             convert_grid_to_string,
+            _pixel_majority_vote,
+            _demo_consistency_score,
+            ARCLogitsProcessor,
         )
         print(f"[GPU {rank}] Imported Duck Harness from trm_orchestrator.", flush=True)
     except ImportError as _ie:
@@ -362,6 +366,30 @@ def run_isolated_gpu_worker(
     _trm_label     = "Coder" if model_coder is not None else "SFT-fallback"
     print(f"[GPU {rank}] TRM engine: {_trm_label}", flush=True)
 
+    # ── ARCLogitsProcessor: compute allowed token IDs and build logits mask ──
+    try:
+        _arc_ids_sft: list = []
+        for _ch in "0123456789":
+            for _tok in tokenizer_sft.encode(_ch, add_special_tokens=False):
+                _arc_ids_sft.append(_tok)
+        for _extra in ("\n", " "):
+            for _tok in tokenizer_sft.encode(_extra, add_special_tokens=False):
+                _arc_ids_sft.append(_tok)
+        if tokenizer_sft.eos_token_id is not None:
+            _arc_ids_sft.append(tokenizer_sft.eos_token_id)
+        _arc_ids_sft = list(set(_arc_ids_sft))
+        _arc_lp_list = LogitsProcessorList([ARCLogitsProcessor(_arc_ids_sft)])
+        print(
+            f"[GPU {rank}] ARCLogitsProcessor ready ({len(_arc_ids_sft)} allowed tokens).",
+            flush=True,
+        )
+    except Exception as _lp_exc:
+        _arc_lp_list = LogitsProcessorList([])
+        print(
+            f"[GPU {rank}] ARCLogitsProcessor disabled ({_lp_exc}) — no token masking.",
+            flush=True,
+        )
+
     # ── Per-panel inference loop ──────────────────────────────────────────────
     signal.signal(signal.SIGALRM, _timeout_handler)
 
@@ -391,6 +419,7 @@ def run_isolated_gpu_worker(
 
             attempt_1: Optional[list] = None
             attempt_2: Optional[list] = None
+            _candidates: list = []  # collects valid grids for majority vote
 
             # ── S1: QwenFormatter SFT greedy → attempt_1 ────────────────────
             try:
@@ -417,11 +446,14 @@ def run_isolated_gpu_worker(
                         temperature=None,
                         top_p=None,
                         pad_token_id=tokenizer_sft.eos_token_id,
+                        logits_processor=_arc_lp_list,
                     )
                 _gen1     = tokenizer_sft.decode(
                     _out1[0][_ids1.shape[-1]:], skip_special_tokens=True
                 )
                 attempt_1 = parse_grid(_gen1, ref_shape)
+                if _is_valid_result(attempt_1, inp):
+                    _candidates.append(attempt_1)
             except Exception as exc:
                 print(f"[GPU {rank}] {task_id} S1 err: {exc}", flush=True)
 
@@ -450,11 +482,14 @@ def run_isolated_gpu_worker(
                         temperature=0.8,
                         top_p=0.95,
                         pad_token_id=tokenizer_sft.eos_token_id,
+                        logits_processor=_arc_lp_list,
                     )
                 _gen2     = tokenizer_sft.decode(
                     _out2[0][_ids2.shape[-1]:], skip_special_tokens=True
                 )
                 attempt_2 = parse_grid(_gen2, ref_shape)
+                if _is_valid_result(attempt_2, inp):
+                    _candidates.append(attempt_2)
             except Exception as exc:
                 print(f"[GPU {rank}] {task_id} S2 err: {exc}", flush=True)
 
@@ -477,11 +512,14 @@ def run_isolated_gpu_worker(
                             temperature=0.4,
                             top_p=0.9,
                             pad_token_id=tokenizer_sft.eos_token_id,
+                            logits_processor=_arc_lp_list,
                         )
                     _gen3 = tokenizer_sft.decode(
                         _out3[0][_ids3.shape[-1]:], skip_special_tokens=True
                     )
                     _fb3 = parse_grid(_gen3, ref_shape)
+                    if _is_valid_result(_fb3, inp):
+                        _candidates.append(_fb3)
                     if attempt_1 is None:
                         attempt_1 = _fb3
                     if attempt_2 is None:
@@ -508,11 +546,14 @@ def run_isolated_gpu_worker(
                             temperature=0.4,
                             top_p=0.9,
                             pad_token_id=tokenizer_sft.eos_token_id,
+                            logits_processor=_arc_lp_list,
                         )
                     _gen4 = tokenizer_sft.decode(
                         _out4[0][_ids4.shape[-1]:], skip_special_tokens=True
                     )
                     _fb4 = parse_grid(_gen4, ref_shape)
+                    if _is_valid_result(_fb4, inp):
+                        _candidates.append(_fb4)
                     if attempt_1 is None:
                         attempt_1 = _fb4
                     if attempt_2 is None:
@@ -545,6 +586,7 @@ def run_isolated_gpu_worker(
                                 temperature=None,
                                 top_p=None,
                                 pad_token_id=tokenizer_sft.eos_token_id,
+                                logits_processor=_arc_lp_list,
                             )
                         _aug_gen  = tokenizer_sft.decode(
                             _aug_out[0][_aug_ids.shape[-1]:], skip_special_tokens=True
@@ -552,6 +594,8 @@ def run_isolated_gpu_worker(
                         _aug_grid = parse_grid(_aug_gen, ref_shape)
                         if _aug_grid is not None:
                             _restored = _inv(_aug_grid)
+                            if _is_valid_result(_restored, inp):
+                                _candidates.append(_restored)
                             if not _is_valid_result(attempt_1, inp):
                                 attempt_1 = _restored
                             elif not _is_valid_result(attempt_2, inp):
@@ -561,6 +605,27 @@ def run_isolated_gpu_worker(
                             f"[GPU {rank}] {task_id} D4/{_tname} err: {_tex}",
                             flush=True,
                         )
+
+            # ── Majority vote + demo consistency (TbV) selection ─────────────
+            if len(_candidates) >= 2:
+                _mv = _pixel_majority_vote(_candidates)
+                if _mv is not None and _is_valid_result(_mv, inp):
+                    _train_pairs = task_data.get("train", [])
+                    _scored = sorted(
+                        [c for c in _candidates if c is not None],
+                        key=lambda g: _demo_consistency_score(g, _train_pairs),
+                        reverse=True,
+                    )
+                    _best_consistent = _scored[0] if _scored else _mv
+                    attempt_1 = _mv
+                    if _is_valid_result(_best_consistent, inp) and _best_consistent != _mv:
+                        attempt_2 = _best_consistent
+                    print(
+                        f"[GPU {rank}] {task_id} MV({len(_candidates)} cands) "
+                        f"a1_ok={_is_valid_result(attempt_1, inp)} "
+                        f"a2_ok={_is_valid_result(attempt_2, inp)}",
+                        flush=True,
+                    )
 
             # ── S5: TRM Duck Harness (Coder or SFT fallback) ─────────────────
             _elapsed     = time.time() - _panel_start
@@ -610,6 +675,46 @@ def run_isolated_gpu_worker(
                     )
                 finally:
                     signal.alarm(0)
+
+            # ── Diversity guard: force attempt_2 ≠ attempt_1 ─────────────────
+            if (
+                _is_valid_result(attempt_1, inp)
+                and _is_valid_result(attempt_2, inp)
+                and attempt_1 == attempt_2
+            ):
+                try:
+                    _sys_dv, _usr_dv = make_prompt(task_view, "colored")
+                    _msgs_dv = [
+                        {"role": "system", "content": _sys_dv},
+                        {"role": "user",   "content": _usr_dv},
+                    ]
+                    _ids_dv = _apply_chat(
+                        tokenizer_sft, _msgs_dv, enable_thinking=False
+                    ).to("cuda:0")
+                    with torch.no_grad():
+                        _out_dv = model_sft.generate(
+                            _ids_dv,
+                            max_new_tokens=32 * 31,
+                            do_sample=True,
+                            temperature=1.2,
+                            top_p=0.95,
+                            pad_token_id=tokenizer_sft.eos_token_id,
+                        )
+                    _gen_dv = tokenizer_sft.decode(
+                        _out_dv[0][_ids_dv.shape[-1]:], skip_special_tokens=True
+                    )
+                    _dv_grid = parse_grid(_gen_dv, ref_shape)
+                    if _is_valid_result(_dv_grid, inp) and _dv_grid != attempt_1:
+                        attempt_2 = _dv_grid
+                        print(
+                            f"[GPU {rank}] {task_id} diversity guard → attempt_2 diversified",
+                            flush=True,
+                        )
+                except Exception as _dv_exc:
+                    print(
+                        f"[GPU {rank}] {task_id} diversity guard err: {_dv_exc}",
+                        flush=True,
+                    )
 
             # ── Hard fallback: echo test input ───────────────────────────────
             if attempt_1 is None:
@@ -733,6 +838,64 @@ def run_dual_model_pass(
                 print(f"[dual] Could not load {rank_file}: {exc}", flush=True)
         else:
             print(f"[dual] Rank {rank} output missing: {rank_file}", flush=True)
+
+    # ── Two-pass retry: re-run tasks where attempt_1 echoes the test input ──
+    try:
+        _echo_tasks = {
+            tid: tasks[tid]
+            for tid, preds in all_results.items()
+            if tid in tasks
+            and preds
+            and preds[0].get("attempt_1") == tasks[tid].get("test", [{}])[0].get("input")
+        }
+        if _echo_tasks:
+            print(
+                f"[dual] Two-pass retry: {len(_echo_tasks)} echo tasks → re-running.",
+                flush=True,
+            )
+            _retry_dir = str(Path(output_dir) / "dual_retry")
+            Path(_retry_dir).mkdir(parents=True, exist_ok=True)
+            _chunks2: list = [[] for _ in range(n_workers)]
+            for _i2, _item2 in enumerate(_echo_tasks.items()):
+                _chunks2[_i2 % n_workers].append(_item2)
+            _ctx2 = mp.get_context("spawn")
+            _procs2 = []
+            for _rk2 in range(n_workers):
+                if not _chunks2[_rk2]:
+                    continue
+                _p2 = _ctx2.Process(
+                    target=run_isolated_gpu_worker,
+                    args=(_rk2, _chunks2[_rk2], coder_path, sft_path,
+                          _retry_dir, max(time_per_task, 90)),
+                    daemon=False,
+                )
+                _p2.start()
+                _procs2.append((_rk2, _p2))
+            for _rk2, _p2 in _procs2:
+                if deadline > 0.0:
+                    _t2 = max(1.0, deadline - time.time())
+                    _p2.join(timeout=_t2)
+                    if _p2.is_alive():
+                        _p2.terminate()
+                        _p2.join(timeout=30)
+                else:
+                    _p2.join()
+            for _rk2 in range(n_workers):
+                _rf2 = Path(_retry_dir) / f"preds_rank_{_rk2}.json"
+                if _rf2.exists():
+                    try:
+                        _rr = json.loads(_rf2.read_text())
+                        for _tid2, _rp in _rr.items():
+                            _orig_inp = tasks.get(_tid2, {}).get("test", [{}])[0].get("input")
+                            if _rp and _rp[0].get("attempt_1") != _orig_inp:
+                                all_results[_tid2] = _rp
+                                print(f"[dual] Retry improved {_tid2}.", flush=True)
+                    except Exception as _re2:
+                        print(f"[dual] Retry load err rank {_rk2}: {_re2}", flush=True)
+        else:
+            print("[dual] Two-pass retry: no echo tasks — skipping.", flush=True)
+    except Exception as _tp_exc:
+        print(f"[dual] Two-pass retry error: {_tp_exc}", flush=True)
 
     Path(output_path).parent.mkdir(parents=True, exist_ok=True)
     Path(output_path).write_text(json.dumps(all_results))
