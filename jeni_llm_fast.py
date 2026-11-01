@@ -33,7 +33,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Optional
 
+import io
 import random
+import signal
 import torch
 import torch.multiprocessing as mp
 
@@ -186,6 +188,195 @@ def _is_valid_result(grid, test_input) -> bool:
     if all(v == 0 for v in flat):   # all-zero → failure
         return False
     return True
+
+# ══════════════════════════════════════════════════════════════════════════════
+# TRM  —  Test-time Recursive Modification  (Python DSL code-generation stage)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# Pipeline:
+#   1. Model generates a Python `transform(grid)` function using numpy.
+#   2. PythonREPL executes it against every training pair inside the container.
+#   3. If any pair fails, structured execution feedback is fed back to the model.
+#   4. Repeats up to max_recursion_depth times until all pairs pass.
+#   5. Up to 2 successful program variants → attempt_1 + attempt_2.
+#
+# Strategy 5 (last resort): triggered only when all prior strategies + D4
+# transform-retry have failed to produce valid predictions AND sufficient
+# wall-clock budget remains (_PANEL_BUDGET_SEC).
+# ══════════════════════════════════════════════════════════════════════════════
+
+_PANEL_BUDGET_SEC = 180      # hard wall-clock budget per panel (incl. TRM stage)
+
+
+class TimeoutException(Exception):
+    """Raised by SIGALRM handler when per-panel time budget is exceeded."""
+
+
+def _timeout_handler(signum, frame):  # noqa: ANN001
+    raise TimeoutException("Panel time budget exceeded")
+
+
+class PythonREPL:
+    """
+    Lightweight isolated execution sandbox for TRM code validation.
+    Executes model-generated `transform(grid: list) -> list` functions against
+    ARC training pairs to check correctness before using the output.
+    """
+
+    def __init__(self):
+        self.globals = {"np": __import__("numpy")}
+        try:
+            self.globals["scipy"] = __import__("scipy")
+        except ImportError:
+            pass
+
+    def execute_code(self, code_str: str, input_grid: list):
+        """
+        Execute generated transform(grid) on input_grid.
+        Returns the result as a nested Python list, or None on any error.
+        """
+        exec_ctx = f"{code_str}\n\n_result_grid = transform({input_grid!r})"
+        old_stdout = sys.stdout
+        sys.stdout = io.StringIO()
+        try:
+            local_vars: dict = {}
+            exec(exec_ctx, self.globals, local_vars)  # noqa: S102
+            result = local_vars.get("_result_grid", None)
+            if hasattr(result, "tolist"):   # normalise numpy → list
+                result = result.tolist()
+            return result
+        except Exception:  # noqa: BLE001
+            return None
+        finally:
+            sys.stdout = old_stdout
+
+
+def _trm_format_prompt(
+    task_data: dict,
+    current_code: "str | None",
+    feedback: "str | None",
+) -> str:
+    """Build a stateful model prompt for TRM code generation / refinement."""
+    prompt = (
+        "<|user|>\nYou are a high-level recursive program synthesizer solving an ARC visual puzzle.\n"
+        "Write a Python function named `transform(grid: list[list[int]]) -> list[list[int]]` using numpy.\n\n"
+    )
+    for i, pair in enumerate(task_data["train"]):
+        prompt += f"Example {i+1} Input:\n{json.dumps(pair['input'])}\n"
+        prompt += f"Example {i+1} Expected Output:\n{json.dumps(pair['output'])}\n\n"
+    prompt += f"Test Target Input:\n{json.dumps(task_data['test']['input'])}\n\n"
+    if current_code and feedback:
+        prompt += (
+            f"### RECURSIVE REFINEMENT STEP ###\n"
+            f"Your previous code version failed verification:\n```python\n{current_code}\n```\n"
+            f"Execution Feedback: {feedback}\n"
+            f"Please correct the function logic and output the entire rewritten function.\n"
+        )
+    prompt += "Provide the python code block wrapped inside ```python and ```.\n<|assistant|>\n"
+    return prompt
+
+
+def _trm_extract_code(model_output: str) -> str:
+    """Strip markdown fences to return the raw Python string block."""
+    if "```python" in model_output:
+        return model_output.split("```python")[1].split("```")[0].strip()
+    if "```" in model_output:
+        return model_output.split("```")[1].split("```")[0].strip()
+    return model_output.strip()
+
+
+def recursive_trm_loop(
+    task_id: str,
+    task_data: dict,
+    model,
+    tokenizer,
+    max_recursion_depth: int = 4,
+) -> dict:
+    """
+    TRM Core Engine — iterates code generation and REPL validation.
+
+    Args:
+        task_id:             Logging label only.
+        task_data:           {"train": [{"input":..,"output":..},...],
+                              "test":  {"input": grid}}
+        model / tokenizer:   Already-loaded Qwen3-4B on the worker GPU.
+        max_recursion_depth: Max generate → validate → refine cycles.
+
+    Returns:
+        {"attempt_1": grid, "attempt_2": grid}
+    """
+    repl = PythonREPL()
+    current_code: "str | None" = None
+    feedback_message: "str | None" = None
+    fallback = task_data["test"]["input"]
+    successful_programs: list = []
+
+    for depth in range(max_recursion_depth):
+        # 1. Build context-aware prompt (includes failure feedback when depth > 0)
+        prompt = _trm_format_prompt(task_data, current_code, feedback_message)
+        inputs = tokenizer(prompt, return_tensors="pt").to(model.device)
+
+        with torch.no_grad():
+            outputs = model.generate(
+                **inputs,
+                max_new_tokens=600,
+                do_sample=(depth > 0),
+                temperature=0.2 if depth == 0 else 0.6,
+                top_p=0.95 if depth > 0 else None,
+                pad_token_id=tokenizer.eos_token_id,
+            )
+        generated_text = tokenizer.decode(
+            outputs[0][inputs.input_ids.shape[1]:], skip_special_tokens=True
+        )
+        current_code = _trm_extract_code(generated_text)
+
+        # 2. Validate against all training pairs in REPL
+        all_passed = True
+        failed_idx = -1
+        observed_out = None
+
+        for idx, pair in enumerate(task_data["train"]):
+            test_res = repl.execute_code(current_code, pair["input"])
+            if test_res is None or test_res != pair["output"]:
+                all_passed = False
+                failed_idx = idx
+                observed_out = test_res
+                break
+
+        # 3. Evaluate recursion state
+        if all_passed:
+            final_out = repl.execute_code(current_code, task_data["test"]["input"])
+            if final_out is not None:
+                successful_programs.append(final_out)
+                if len(successful_programs) >= 2:
+                    break  # got both attempt slots — done
+            # Ask for an alternate logic path to diversify attempt_2
+            feedback_message = (
+                "Generates valid solution. "
+                "Provide an alternative transformation logic path using a different algorithm."
+            )
+        else:
+            if observed_out is None:
+                feedback_message = (
+                    f"SyntaxError or execution crash on Example {failed_idx + 1}."
+                )
+            else:
+                feedback_message = (
+                    f"Logic mismatch on Example {failed_idx + 1}: "
+                    f"generated output shape/values did not match expected."
+                )
+
+        print(
+            f"[TRM] {task_id} depth={depth} all_passed={all_passed} "
+            f"programs={len(successful_programs)}",
+            flush=True,
+        )
+
+    # 4. Build submission candidates
+    attempt_1 = successful_programs[0] if len(successful_programs) >= 1 else fallback
+    attempt_2 = successful_programs[1] if len(successful_programs) >= 2 else attempt_1
+    return {"attempt_1": attempt_1, "attempt_2": attempt_2}
+
 
 # ── System prompts ─────────────────────────────────────────────────────────────
 
@@ -351,6 +542,7 @@ def worker_inference(
 
                 attempt_1: Optional[list] = None
                 attempt_2: Optional[list] = None
+                _panel_start = time.time()  # TRM budget: track elapsed time
 
                 # ── A/B override: env var can force a single style ───────────────
                 _FORCE_STYLE = os.getenv("ARC_LLM_FORCE_STYLE", "").strip().lower()
@@ -526,6 +718,44 @@ def worker_inference(
                         except Exception as _tex:
                             print(f"[GPU{rank}] {task_id} transform {_tname} err: {_tex}", flush=True)
                             continue
+
+                # ── Strategy 5: TRM code-generation (last resort) ─────────────
+                # Triggered only when prior strategies + transform-retry both
+                # failed AND we still have budget left within _PANEL_BUDGET_SEC.
+                _elapsed = time.time() - _panel_start
+                _budget_left = _PANEL_BUDGET_SEC - int(_elapsed)
+                if (
+                    (
+                        not _is_valid_result(attempt_1, inp)
+                        or not _is_valid_result(attempt_2, inp)
+                    )
+                    and _budget_left > 30
+                ):
+                    signal.signal(signal.SIGALRM, _timeout_handler)
+                    signal.alarm(max(30, _budget_left))
+                    try:
+                        _trm_data = {"train": task.get("train", []), "test": panel}
+                        _trm_res = recursive_trm_loop(
+                            task_id, _trm_data, model, tokenizer, max_recursion_depth=4
+                        )
+                        if not _is_valid_result(attempt_1, inp):
+                            _cand = _trm_res["attempt_1"]
+                            if _is_valid_result(_cand, inp):
+                                attempt_1 = _cand
+                                print(f"[GPU{rank}] {task_id} TRM -> attempt_1 OK", flush=True)
+                        if not _is_valid_result(attempt_2, inp):
+                            _cand2 = _trm_res["attempt_2"]
+                            if _is_valid_result(_cand2, inp):
+                                attempt_2 = _cand2
+                                print(f"[GPU{rank}] {task_id} TRM -> attempt_2 OK", flush=True)
+                    except (TimeoutException, Exception) as _trm_exc:
+                        print(
+                            f"[GPU{rank}] {task_id} TRM err ({type(_trm_exc).__name__}): "
+                            f"{_trm_exc}",
+                            flush=True,
+                        )
+                    finally:
+                        signal.alarm(0)  # always cancel alarm
 
                 # ── Hard fallback: test input ─────────────────────────────────
                 if attempt_1 is None:
