@@ -189,6 +189,41 @@ def _is_valid_result(grid, test_input) -> bool:
         return False
     return True
 
+def _pixel_majority_vote_fast(candidates: list):
+    """Return the candidate grid that appears most often (pixel-level majority vote).
+    Inline copy for jeni_llm_fast.py — does not import from trm_orchestrator.
+    Falls back to first valid candidate if no majority; None if list is empty.
+    """
+    if not candidates:
+        return None
+    valid = [g for g in candidates if g is not None]
+    if not valid:
+        return None
+    if len(valid) == 1:
+        return valid[0]
+    counts: Counter = Counter()
+    for g in valid:
+        counts[tuple(tuple(row) for row in g)] += 1
+    best_key, _ = counts.most_common(1)[0]
+    return [list(row) for row in best_key]
+
+
+def _demo_consistency_score_fast(grid: list, train_pairs: list) -> float:
+    """Return [0, 1]: fraction of training outputs whose shape matches grid.
+    Inline copy for jeni_llm_fast.py — does not import from trm_orchestrator.
+    """
+    if grid is None or not train_pairs:
+        return 0.0
+    g_rows, g_cols = len(grid), (len(grid[0]) if grid else 0)
+    return sum(
+        1 for p in train_pairs
+        if p.get("output")
+        and len(p["output"]) == g_rows
+        and len(p["output"][0]) == g_cols
+    ) / max(len(train_pairs), 1)
+
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # TRM  —  Test-time Recursive Modification  (Python DSL code-generation stage)
 # ══════════════════════════════════════════════════════════════════════════════
@@ -781,6 +816,62 @@ def worker_inference(
                     attempt_2 = parse_grid(gen2, None)
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} nvarc_s2 err: {exc}", flush=True)
+
+
+                # ── Strategy 2b: 3-temperature ensemble + consistency voting ──────
+                # Runs T=0.1 / T=0.4 / T=0.7 when attempt_1 is already valid,
+                # then picks the majority-voted grid as attempt_1 and the
+                # runner-up (highest demo-consistency score) as attempt_2.
+                # Budget guard: skip if < 20 s remain in panel budget.
+                if _is_valid_result(attempt_1, inp) and                         (time.time() - _panel_start) < (_PANEL_BUDGET_SEC - 20):
+                    try:
+                        from arc_loader import QwenFormatter as _QFE  # noqa: PLC0415
+                        _qfe = _QFE(tokenizer)
+                        _prompt_e = _qfe.fmt_train(task_view["train"]) + _qfe.fmt_query([panel])
+                        _ids_e = tokenizer(_prompt_e, return_tensors="pt").input_ids.to("cuda:0")
+                        _ens_cands = [attempt_1]  # seed with greedy result
+                        for _et in (0.1, 0.4, 0.7):
+                            _et_elapsed = time.time() - _panel_start
+                            if _et_elapsed >= (_PANEL_BUDGET_SEC - 15):
+                                break  # hard budget guard
+                            with torch.no_grad():
+                                _et_out = model.generate(
+                                    _ids_e,
+                                    max_new_tokens=32 * 31,
+                                    do_sample=True,
+                                    temperature=_et,
+                                    top_p=0.95,
+                                    pad_token_id=tokenizer.eos_token_id,
+                                )
+                            _et_gen  = tokenizer.decode(
+                                _et_out[0][_ids_e.shape[-1]:], skip_special_tokens=True
+                            )
+                            _et_grid = parse_grid(_et_gen, None)
+                            if _et_grid is not None:
+                                _ens_cands.append(_et_grid)
+                        # Vote for best attempt_1; rank by demo-consistency for attempt_2
+                        if len(_ens_cands) >= 2:
+                            _voted = _pixel_majority_vote_fast(_ens_cands)
+                            _ranked = sorted(
+                                [g for g in _ens_cands if g is not None],
+                                key=lambda g: _demo_consistency_score_fast(
+                                    g, task_view["train"]
+                                ),
+                                reverse=True,
+                            )
+                            if _voted is not None:
+                                attempt_1 = _voted
+                            if len(_ranked) >= 2:
+                                attempt_2 = _ranked[1]  # runner-up → diversity
+                            elif _ranked:
+                                attempt_2 = _ranked[0]
+                            print(
+                                f"[GPU{rank}] {task_id} ens3({len(_ens_cands)} cands) "
+                                f"T=0.1/0.4/0.7 → voted a1, ranked a2",
+                                flush=True,
+                            )
+                    except Exception as _ens_exc:
+                        print(f"[GPU{rank}] {task_id} ens3 err: {_ens_exc}", flush=True)
 
                 # ── Strategy 3: compact T=0.4 (fallback if either failed) ────
                 if attempt_1 is None or attempt_2 is None:
