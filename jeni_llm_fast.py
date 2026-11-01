@@ -300,6 +300,9 @@ def worker_inference(
                 attempt_1: Optional[list] = None
                 attempt_2: Optional[list] = None
 
+                # ── A/B override: env var can force a single style ───────────────
+                _FORCE_STYLE = os.getenv("ARC_LLM_FORCE_STYLE", "").strip().lower()
+
                 # ── Strategy 1: greedy NVARC format → attempt_1 ─────────────────
                 # Uses the exact SFT training format: compact multi-turn, no system msg
                 try:
@@ -327,27 +330,33 @@ def worker_inference(
                 except Exception as exc:
                     print(f"[GPU{rank}] {task_id} direct err: {exc}", flush=True)
 
-                # ── Strategy 2: CoT sampled T=0.7 → attempt_2 ────────────────
+                # ── Strategy 2: NVARC sampled T=0.8 → attempt_2 ──────────────
+                # SFT model trained exclusively on nvarc format — use same format
+                # with sampling for diversity vs greedy attempt_1
                 try:
-                    sys_m2, usr_m2 = make_prompt(task_view, "cot")
-                    msgs2 = [
-                        {"role": "system",  "content": sys_m2},
-                        {"role": "user",    "content": usr_m2},
-                    ]
-                    ids2 = _apply_chat(tokenizer, msgs2, enable_thinking=True).to("cuda:0")
+                    _style_ret2 = make_prompt(task_view, "nvarc")
+                    if _style_ret2[0] == "__NVARC_MULTITURN__":
+                        msgs2 = _style_ret2[1]
+                    else:
+                        sys_m2, usr_m2 = _style_ret2
+                        msgs2 = [
+                            {"role": "system", "content": sys_m2},
+                            {"role": "user",   "content": usr_m2},
+                        ]
+                    ids2 = _apply_chat(tokenizer, msgs2, enable_thinking=False).to("cuda:0")
                     with torch.no_grad():
                         out2 = model.generate(
                             ids2,
-                            max_new_tokens=1024,
+                            max_new_tokens=512,
                             do_sample=True,
-                            temperature=0.7,
-                            top_p=0.9,
+                            temperature=0.8,
+                            top_p=0.95,
                             pad_token_id=tokenizer.eos_token_id,
                         )
                     gen2 = tokenizer.decode(out2[0][ids2.shape[-1]:], skip_special_tokens=True)
                     attempt_2 = parse_grid(gen2, ref_shape)
                 except Exception as exc:
-                    print(f"[GPU{rank}] {task_id} cot err: {exc}", flush=True)
+                    print(f"[GPU{rank}] {task_id} nvarc_s2 err: {exc}", flush=True)
 
                 # ── Strategy 3: compact T=0.4 (fallback if either failed) ────
                 if attempt_1 is None or attempt_2 is None:
@@ -402,6 +411,29 @@ def worker_inference(
                             attempt_2 = fb4
                     except Exception as exc:
                         print(f"[GPU{rank}] {task_id} colored err: {exc}", flush=True)
+
+                # ── FORCE_STYLE override (A/B benchmark mode) ────────────────────
+                if _FORCE_STYLE and _FORCE_STYLE != "nvarc":
+                    # Re-run with the forced style and overwrite both attempts
+                    try:
+                        _fs_result = make_prompt(task_view, _FORCE_STYLE)
+                        if isinstance(_fs_result, tuple) and _fs_result[0] == "__NVARC_MULTITURN__":
+                            _fs_msgs = _fs_result[1]
+                        else:
+                            _fs_sys, _fs_usr = _fs_result
+                            _fs_msgs = [{"role": "system", "content": _fs_sys},
+                                        {"role": "user",   "content": _fs_usr}]
+                        _fs_ids = _apply_chat(tokenizer, _fs_msgs, enable_thinking=False).to("cuda:0")
+                        with torch.no_grad():
+                            _fs_out = model.generate(_fs_ids, max_new_tokens=512,
+                                do_sample=False, temperature=None, top_p=None,
+                                pad_token_id=tokenizer.eos_token_id)
+                        _fs_gen  = tokenizer.decode(_fs_out[0][_fs_ids.shape[-1]:], skip_special_tokens=True)
+                        _fs_grid = parse_grid(_fs_gen, ref_shape)
+                        attempt_1 = _fs_grid
+                        attempt_2 = _fs_grid
+                    except Exception as _fs_exc:
+                        print(f"[GPU{rank}] {task_id} force_style err: {_fs_exc}", flush=True)
 
                 # ── Hard fallback: test input ─────────────────────────────────
                 if attempt_1 is None:
